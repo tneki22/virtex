@@ -18,6 +18,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import type { StudyMode, StudySession } from "../../../shared/contracts.js";
 import { readinessFromScore } from "../../../shared/progress.js";
+import { normalizeStudyMode } from "../../../shared/study-mode.js";
 import type { ExamApi, ExamDetail, QuestionDetail, ReviewResponse } from "../api.js";
 import { api as defaultApi } from "../api.js";
 import { ErrorState, LoadingState } from "../components/AppShell.js";
@@ -26,7 +27,6 @@ type RightTab = "sources" | "reference" | "notes";
 
 const modeLabels: Record<StudyMode, string> = {
   study: "Изучение",
-  practice: "Практика",
   exam: "Экзамен",
 };
 
@@ -41,7 +41,7 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
   const { examId = "", questionId: routeQuestionId = "" } = useParams();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
-  const mode = (searchParams.get("mode") ?? "study") as StudyMode;
+  const mode = normalizeStudyMode(searchParams.get("mode"));
   const [exam, setExam] = useState<ExamDetail | null>(null);
   const [question, setQuestion] = useState<QuestionDetail | null>(null);
   const [selectedQuestionId, setSelectedQuestionId] = useState(routeQuestionId);

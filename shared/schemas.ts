@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+export const studyModeSchema = z.enum(["study", "exam"]);
+
 export const sourceReferenceSchema = z.object({
   documentId: z.string().min(1),
   page: z.number().int().positive(),

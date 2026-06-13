@@ -1,4 +1,4 @@
-export type StudyMode = "study" | "practice" | "exam";
+export type StudyMode = "study" | "exam";
 
 export type ReadinessStatus =
   | "not_started"

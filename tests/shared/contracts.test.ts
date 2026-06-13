@@ -5,6 +5,20 @@ import {
   sourceRefKey,
 } from "../../shared/progress.js";
 import { examPackageSchema } from "../../shared/schemas.js";
+import { normalizeStudyMode } from "../../shared/study-mode.js";
+
+describe("normalizeStudyMode", () => {
+  it("normalizes legacy practice links to exam", () => {
+    expect(normalizeStudyMode("practice")).toBe("exam");
+    expect(normalizeStudyMode("exam")).toBe("exam");
+    expect(normalizeStudyMode("study")).toBe("study");
+  });
+
+  it("uses study for missing or invalid values", () => {
+    expect(normalizeStudyMode(null)).toBe("study");
+    expect(normalizeStudyMode("unknown")).toBe("study");
+  });
+});
 
 describe("readinessFromScore", () => {
   it("maps attempts to stable readiness levels", () => {

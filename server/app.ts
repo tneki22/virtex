@@ -7,10 +7,10 @@ import type {
   ExamPackage,
   ExamQuestion,
   SessionMessage,
-  StudyMode,
 } from "../shared/contracts.js";
 import { calculateXp, readinessFromScore } from "../shared/progress.js";
-import { aiReviewContentSchema } from "../shared/schemas.js";
+import { aiReviewContentSchema, studyModeSchema } from "../shared/schemas.js";
+import { normalizeStudyMode } from "../shared/study-mode.js";
 import type { AIProvider } from "./ai.js";
 import { guardInstructionOnlyAnswer } from "./answer-guard.js";
 import {
@@ -31,7 +31,7 @@ interface SessionRow {
   id: string;
   exam_id: string;
   question_id: string;
-  mode: StudyMode;
+  mode: string;
   profile_id: string;
   status: "active" | "completed";
   follow_up_count: number;
@@ -52,7 +52,7 @@ function sessionFromRow(row: SessionRow) {
     id: row.id,
     examId: row.exam_id,
     questionId: row.question_id,
-    mode: row.mode,
+    mode: normalizeStudyMode(row.mode),
     profileId: row.profile_id,
     status: row.status,
     followUpCount: row.follow_up_count,
@@ -285,7 +285,7 @@ export function createApp(options: CreateAppOptions) {
       .object({
         examId: z.string(),
         questionId: z.string().optional(),
-        mode: z.enum(["study", "practice", "exam"]),
+        mode: studyModeSchema,
         profileId: z.string(),
       })
       .parse(request.body);

@@ -78,7 +78,7 @@ async function createSession(app: ReturnType<typeof createApp>) {
   const response = await request(app).post("/api/sessions").send({
     examId: "exam",
     questionId: "q-1",
-    mode: "practice",
+    mode: "exam",
     profileId: "neutral",
   });
   expect(response.status).toBe(201);
