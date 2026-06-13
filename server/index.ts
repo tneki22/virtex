@@ -7,6 +7,7 @@ import { OpenAICompatibleProvider } from "./ai.js";
 import { loadEnvironmentFiles, resolveRuntimeConfig } from "./config.js";
 import { loadExamPackages } from "./content.js";
 import { createDatabase } from "./database.js";
+import { GroqTranscriptionProvider } from "./transcription.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 loadEnvironmentFiles(root);
@@ -22,8 +23,15 @@ const aiProvider = config.ai
       model: config.ai.model,
     })
   : null;
+const speechProvider = config.speech
+  ? new GroqTranscriptionProvider({
+      apiKey: config.speech.apiKey,
+      baseUrl: config.speech.baseUrl,
+      model: config.speech.model,
+    })
+  : null;
 
-const app = createApp({ database, exams, aiProvider });
+const app = createApp({ database, exams, aiProvider, speechProvider });
 const clientDirectory = path.join(root, "dist", "client");
 try {
   await access(clientDirectory);
@@ -38,6 +46,6 @@ try {
 
 app.listen(config.port, "127.0.0.1", () => {
   console.log(
-    `Virtex API listening on http://127.0.0.1:${config.port} (${exams.length} exam package${exams.length === 1 ? "" : "s"}, AI ${aiProvider ? `on: ${aiProvider.model}` : "off"})`,
+    `Virtex API listening on http://127.0.0.1:${config.port} (${exams.length} exam package${exams.length === 1 ? "" : "s"}, AI ${aiProvider ? `on: ${aiProvider.model}` : "off"}, speech ${speechProvider ? `on: ${speechProvider.model}` : "off"})`,
   );
 });

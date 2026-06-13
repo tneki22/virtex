@@ -1,5 +1,5 @@
 import request from "supertest";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExamPackage } from "../../shared/contracts.js";
 import { createApp } from "../../server/app.js";
 import type { AIProvider, ReviewProviderInput } from "../../server/ai.js";
@@ -90,6 +90,38 @@ describe("exam API", () => {
 
   beforeEach(() => {
     database = createDatabase(":memory:");
+  });
+
+  it("transcribes audio without exposing the reference answer", async () => {
+    const transcribe = vi.fn().mockResolvedValue({
+      text: "Распознанный ответ",
+      model: "whisper-large-v3-turbo",
+    });
+    const app = createApp({
+      database,
+      exams: [exam],
+      aiProvider: null,
+      speechProvider: { model: "whisper-large-v3-turbo", transcribe },
+    });
+
+    const response = await request(app)
+      .post("/api/transcriptions")
+      .field("questionId", "q-1")
+      .attach("audio", Buffer.from("audio"), {
+        filename: "answer.webm",
+        contentType: "audio/webm",
+      });
+
+    expect(response.status).toBe(200);
+    expect(response.body.text).toBe("Распознанный ответ");
+    const prompt = transcribe.mock.calls[0][0].prompt as string;
+    expect(prompt).toContain("What is a transaction?");
+    expect(prompt).not.toContain(exam.questions[0].referenceAnswer);
+  });
+
+  it("reports unavailable speech configuration", async () => {
+    const app = createApp({ database, exams: [exam], aiProvider: null });
+    expect((await request(app).post("/api/transcriptions")).status).toBe(503);
   });
 
   it("runs a sequential multi-question exam", async () => {

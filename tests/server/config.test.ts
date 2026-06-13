@@ -14,4 +14,12 @@ describe("resolveRuntimeConfig", () => {
     expect(config.ai?.baseUrl).toBe("https://openrouter.ai/api/v1");
     expect(config.ai?.model).toBe("openai/gpt-5-mini");
   });
+
+  it("configures Groq speech independently from answer checking", () => {
+    expect(resolveRuntimeConfig("C:/project", { GROQ_API_KEY: " key " }).speech).toEqual({
+      apiKey: "key",
+      baseUrl: "https://api.groq.com/openai/v1",
+      model: "whisper-large-v3-turbo",
+    });
+  });
 });

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import express from "express";
+import multer from "multer";
 import { z } from "zod";
 import type {
   AIReview,
@@ -31,11 +32,13 @@ import {
   PROMPT_VERSION,
   REVIEW_SCHEMA_VERSION,
 } from "./prompt.js";
+import type { SpeechTranscriptionProvider } from "./transcription.js";
 
 interface CreateAppOptions {
   database: Database.Database;
   exams: ExamPackage[];
   aiProvider: AIProvider | null;
+  speechProvider?: SpeechTranscriptionProvider | null;
   now?: () => Date;
   random?: () => number;
 }
@@ -110,12 +113,27 @@ function validateProviderResponse(
 
 export function createApp(options: CreateAppOptions) {
   const app = express();
-  const { database, aiProvider } = options;
+  const { database, aiProvider, speechProvider = null } = options;
   const now = options.now ?? (() => new Date());
   const random = options.random ?? Math.random;
   const examMap = new Map(options.exams.map((exam) => [exam.id, exam]));
 
   app.use(express.json({ limit: "1mb" }));
+  const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 20 * 1024 * 1024, files: 1 },
+    fileFilter: (_request, file, callback) => {
+      const mimeType = file.mimetype.split(";")[0];
+      callback(null, [
+        "audio/webm",
+        "audio/ogg",
+        "audio/wav",
+        "audio/x-wav",
+        "audio/mpeg",
+        "audio/mp4",
+      ].includes(mimeType));
+    },
+  });
 
   function timestamp() {
     return now().toISOString();
@@ -414,6 +432,38 @@ export function createApp(options: CreateAppOptions) {
     response.json({ run: getExamRun(database, run.id), session });
   });
 
+  app.post("/api/transcriptions", (request, response, next) => {
+    if (!speechProvider) {
+      return response.status(503).json({ error: "Voice transcription is not configured" });
+    }
+    upload.single("audio")(request, response, (error) => {
+      if (error) return next(error);
+      void (async () => {
+        if (!request.file) {
+          return response.status(400).json({ error: "A supported audio file is required" });
+        }
+        const { questionId } = z.object({ questionId: z.string().min(1) }).parse(request.body);
+        const { exam, question } = findQuestion(questionId);
+        const prompt = [
+          exam.subject,
+          `Вопрос: ${question.displayText}`,
+          question.emphasis.length > 0 ? `Ключевые термины: ${question.emphasis.join(", ")}` : "",
+        ].filter(Boolean).join(". ");
+        try {
+          const result = await speechProvider.transcribe({
+            buffer: request.file.buffer,
+            fileName: request.file.originalname || "answer.webm",
+            mimeType: request.file.mimetype,
+            prompt,
+          });
+          response.json(result);
+        } catch {
+          response.status(502).json({ error: "Voice transcription failed" });
+        }
+      })().catch(next);
+    });
+  });
+
   app.post("/api/sessions", (request, response) => {
     const body = z
       .object({
@@ -613,6 +663,11 @@ export function createApp(options: CreateAppOptions) {
   });
 
   app.use((error: unknown, _request: express.Request, response: express.Response, _next: express.NextFunction) => {
+    if (error instanceof multer.MulterError) {
+      return response.status(error.code === "LIMIT_FILE_SIZE" ? 413 : 400).json({
+        error: error.code === "LIMIT_FILE_SIZE" ? "Audio file is too large" : "Invalid audio upload",
+      });
+    }
     if (error instanceof z.ZodError) {
       return response.status(400).json({ error: "Invalid request", issues: error.issues });
     }

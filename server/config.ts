@@ -12,6 +12,11 @@ export interface RuntimeConfig {
     baseUrl: string;
     model: string;
   } | null;
+  speech: {
+    apiKey: string;
+    baseUrl: string;
+    model: string;
+  } | null;
 }
 
 export function loadEnvironmentFiles(
@@ -40,6 +45,7 @@ export function resolveRuntimeConfig(root: string, environment: Environment): Ru
     ? path.resolve(root, environment.DATABASE_PATH)
     : path.join(dataDirectory, "virtex.sqlite");
   const apiKey = environment.OPENAI_API_KEY?.trim();
+  const groqApiKey = environment.GROQ_API_KEY?.trim();
 
   return {
     port: Number(environment.PORT ?? 4173),
@@ -49,6 +55,13 @@ export function resolveRuntimeConfig(root: string, environment: Environment): Ru
           apiKey,
           baseUrl: environment.OPENAI_BASE_URL ?? "https://openrouter.ai/api/v1",
           model: environment.OPENAI_MODEL ?? "openai/gpt-5-mini",
+        }
+      : null,
+    speech: groqApiKey
+      ? {
+          apiKey: groqApiKey,
+          baseUrl: environment.GROQ_BASE_URL ?? "https://api.groq.com/openai/v1",
+          model: environment.GROQ_WHISPER_MODEL ?? "whisper-large-v3-turbo",
         }
       : null,
   };
