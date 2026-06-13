@@ -60,6 +60,7 @@ export interface ExamApi {
   }): Promise<ExamRunStep>;
   getExamRun(runId: string): Promise<ExamRunStep>;
   advanceExamRun(runId: string): Promise<ExamRunStep>;
+  transcribe(audio: Blob, questionId: string): Promise<{ text: string; model: string }>;
   sendMessage(sessionId: string, content: string): Promise<SessionMessage>;
   review(sessionId: string, answer: string): Promise<ReviewResponse>;
   updateNote(questionId: string, note: string): Promise<{ questionId: string; note: string }>;
@@ -124,6 +125,17 @@ export class HttpExamApi implements ExamApi {
       method: "POST",
       body: "{}",
     });
+  }
+
+  async transcribe(audio: Blob, questionId: string) {
+    const body = new FormData();
+    const extension = audio.type.includes("ogg") ? "ogg" : "webm";
+    body.append("audio", audio, `answer.${extension}`);
+    body.append("questionId", questionId);
+    const response = await fetch("/api/transcriptions", { method: "POST", body });
+    const payload = await response.json() as { text?: string; model?: string; error?: string };
+    if (!response.ok) throw new Error(payload.error ?? "Не удалось распознать речь");
+    return { text: payload.text ?? "", model: payload.model ?? "unknown" };
   }
 
   sendMessage(sessionId: string, content: string) {
@@ -365,6 +377,11 @@ export class MockExamApi implements ExamApi {
     next.sessionId = session.id;
     this.runSessions.set(session.id, { runId, position: next.position });
     return { run, session };
+  }
+
+  async transcribe(_audio: Blob, _questionId: string) {
+    await this.delay();
+    return { text: "Транзакция — логическая единица работы с гарантиями ACID.", model: "mock-whisper" };
   }
 
   async sendMessage(sessionId: string, content: string) {

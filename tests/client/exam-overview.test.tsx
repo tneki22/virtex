@@ -48,6 +48,7 @@ function createApi(): ExamApi {
     createExamRun: vi.fn(),
     getExamRun: vi.fn(),
     advanceExamRun: vi.fn(),
+    transcribe: vi.fn(),
     sendMessage: vi.fn(),
     review: vi.fn(),
     updateNote: vi.fn(),

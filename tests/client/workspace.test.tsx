@@ -68,6 +68,7 @@ function createApi(): ExamApi {
     createExamRun: vi.fn(),
     getExamRun: vi.fn(),
     advanceExamRun: vi.fn(),
+    transcribe: vi.fn(),
     sendMessage: vi.fn(),
     review: vi.fn(),
     updateNote: vi.fn().mockResolvedValue({ questionId: "q-1", note: "My note" }),
@@ -232,6 +233,7 @@ describe("Workspace", () => {
     expect(screen.getByRole("main")).toContainElement(
       screen.getByLabelText(/профиль экзаменатора/i),
     );
+    expect(screen.getByRole("button", { name: /диктовать/i })).toBeInTheDocument();
   });
 
   it("persists notes and bookmarks through the repository", async () => {

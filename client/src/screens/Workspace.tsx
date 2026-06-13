@@ -6,10 +6,12 @@ import {
   ChevronRight,
   Menu,
   MessageSquare,
+  Mic,
   PanelRightOpen,
   Search,
   Send,
   Sparkles,
+  Square,
   X,
 } from "lucide-react";
 import type { CSSProperties } from "react";
@@ -33,6 +35,7 @@ import { ExamRunSummary } from "../components/ExamRunSummary.js";
 import { PanelResizeHandle } from "../components/PanelResizeHandle.js";
 import { ProgressiveText } from "../components/ProgressiveText.js";
 import { MIN_LEFT, MIN_RIGHT, usePanelLayout } from "../hooks/usePanelLayout.js";
+import { useVoiceInput } from "../hooks/useVoiceInput.js";
 
 type RightTab = "answers" | "notes";
 type DialogueTurn = {
@@ -87,6 +90,13 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
   const [examRun, setExamRun] = useState<ExamRun | null>(null);
   const [examSummary, setExamSummary] = useState<ExamRunSummaryData | null>(null);
   const [loadingRun, setLoadingRun] = useState(false);
+  const voiceInput = useVoiceInput({
+    api,
+    questionId: question?.id ?? "",
+    onTranscript: (text) => setAnswer((current) => current.trim()
+      ? `${current.trimEnd()}\n\n${text}`
+      : text),
+  });
 
   useEffect(() => {
     void api
@@ -468,7 +478,21 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
               aria-label="Ответ на вопрос"
             />
             <div className="editor-footer">
-              <span>{answer.trim().split(/\s+/).filter(Boolean).length} слов</span>
+              <div className="editor-meta">
+                <span>{answer.trim().split(/\s+/).filter(Boolean).length} слов</span>
+                <button
+                  type="button"
+                  className={`voice-button ${voiceInput.status === "recording" ? "is-recording" : ""}`}
+                  disabled={completed || voiceInput.status === "transcribing"}
+                  onClick={() => void voiceInput.toggle()}
+                >
+                  {voiceInput.status === "recording" ? <Square size={14} /> : <Mic size={15} />}
+                  {voiceInput.status === "recording"
+                    ? `Стоп ${Math.floor(voiceInput.durationSeconds / 60)}:${String(voiceInput.durationSeconds % 60).padStart(2, "0")}`
+                    : voiceInput.status === "transcribing" ? "Распознаём…" : "Диктовать"}
+                </button>
+                {voiceInput.error && <span className="voice-error">{voiceInput.error}</span>}
+              </div>
               <button className="primary-button" disabled={!answer.trim() || loadingReview || completed} onClick={() => void submitAnswer()}>
                 {loadingReview ? <><span className="button-spinner" /> Проверяем</> : <><Send size={17} /> {review?.action === "clarify" ? "Ответить на уточнение" : "Отправить ответ"}</>}
               </button>
