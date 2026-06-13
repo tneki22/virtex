@@ -135,7 +135,12 @@ h1, h2 { font-family: "Newsreader Variable", Georgia, serif; font-weight: 560; l
 .workspace-title strong { color: var(--ink); }
 .workspace-tools { display: flex; gap: 8px; align-items: center; }
 .workspace-tools select { min-width: 170px; padding: 8px 30px 8px 11px; border: 1px solid var(--line); background: var(--paper); font-size: 11px; color: var(--ink); }
-.workspace-grid { height: calc(100vh - 58px); display: grid; grid-template-columns: 280px minmax(420px, 1fr) 360px; }
+.workspace-grid { height: calc(100vh - 58px); display: grid; grid-template-columns: var(--left-panel, 280px) 6px minmax(480px, 1fr) 6px var(--right-panel, 360px); }
+.panel-resize-handle { position: relative; z-index: 8; width: 12px; margin-left: -3px; cursor: col-resize; touch-action: none; background: transparent; }
+.panel-resize-handle span { position: absolute; inset: 0 auto 0 50%; width: 1px; background: var(--line); transition: width var(--ease), background var(--ease); }
+.panel-resize-handle:hover span, .panel-resize-handle:focus-visible span { width: 2px; background: var(--accent); }
+.panel-resize-handle:focus-visible { outline: 3px solid rgba(138, 48, 47, .2); outline-offset: -3px; }
+.is-resizing-panels, .is-resizing-panels * { cursor: col-resize !important; user-select: none !important; }
 .question-panel, .reference-panel { background: #eeece4; overflow: hidden; min-width: 0; }
 .question-panel { border-right: 1px solid var(--line); display: flex; flex-direction: column; }
 .reference-panel { border-left: 1px solid var(--line); }
@@ -265,6 +270,7 @@ kbd { border: 1px solid var(--line); border-radius: 3px; padding: 1px 5px; color
 
 @media (max-width: 1100px) {
   .workspace-grid { grid-template-columns: 1fr; }
+  .panel-resize-handle { display: none; }
   .question-panel, .reference-panel { position: fixed; top: 58px; bottom: 0; width: min(390px, 88vw); z-index: 70; box-shadow: var(--shadow); transition: transform var(--ease); }
   .question-panel { left: 0; transform: translateX(-105%); }
   .reference-panel { right: 0; transform: translateX(105%); }

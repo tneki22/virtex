@@ -14,6 +14,7 @@ import {
   Sparkles,
   X,
 } from "lucide-react";
+import type { CSSProperties } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import type { StudyMode, StudySession } from "../../../shared/contracts.js";
@@ -22,6 +23,8 @@ import { normalizeStudyMode } from "../../../shared/study-mode.js";
 import type { ExamApi, ExamDetail, QuestionDetail, ReviewResponse } from "../api.js";
 import { api as defaultApi } from "../api.js";
 import { ErrorState, LoadingState } from "../components/AppShell.js";
+import { PanelResizeHandle } from "../components/PanelResizeHandle.js";
+import { MIN_LEFT, MIN_RIGHT, usePanelLayout } from "../hooks/usePanelLayout.js";
 
 type RightTab = "sources" | "reference" | "notes";
 
@@ -63,6 +66,7 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
   const [sourcePulse, setSourcePulse] = useState(false);
   const startedRandomExam = useRef(false);
   const searchInput = useRef<HTMLInputElement>(null);
+  const panelLayout = usePanelLayout();
 
   useEffect(() => {
     void api
@@ -261,7 +265,13 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
         </div>
       </header>
 
-      <div className="workspace-grid">
+      <div
+        className="workspace-grid"
+        style={{
+          "--left-panel": `${panelLayout.layout.left}px`,
+          "--right-panel": `${panelLayout.layout.right}px`,
+        } as CSSProperties}
+      >
         <aside className={`question-panel ${leftOpen ? "is-open" : ""}`} aria-label="Навигация по вопросам">
           <div className="panel-mobile-head"><strong>Вопросы</strong><button className="icon-button" onClick={() => setLeftOpen(false)} aria-label="Закрыть список"><X size={18} /></button></div>
           <div className="question-search">
@@ -289,6 +299,16 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
             ))}
           </div>
         </aside>
+
+        <PanelResizeHandle
+          label="Изменить ширину списка вопросов"
+          value={panelLayout.layout.left}
+          min={MIN_LEFT}
+          max={panelLayout.limits.leftMax}
+          onChange={(value) => panelLayout.setSide("left", value)}
+          onPointerStart={(event) => panelLayout.startResize("left", event)}
+          onReset={panelLayout.reset}
+        />
 
         <main className="answer-panel">
           <div className="question-heading-row">
@@ -379,6 +399,16 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
             </button>
           )}
         </main>
+
+        <PanelResizeHandle
+          label="Изменить ширину панели ответов"
+          value={panelLayout.layout.right}
+          min={MIN_RIGHT}
+          max={panelLayout.limits.rightMax}
+          onChange={(value) => panelLayout.setSide("right", value)}
+          onPointerStart={(event) => panelLayout.startResize("right", event)}
+          onReset={panelLayout.reset}
+        />
 
         <aside className={`reference-panel ${rightOpen ? "is-open" : ""}`} aria-label="Материалы к вопросу">
           <div className="panel-mobile-head"><strong>Материалы</strong><button className="icon-button" onClick={() => setRightOpen(false)} aria-label="Закрыть материалы"><X size={18} /></button></div>
