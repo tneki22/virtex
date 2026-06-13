@@ -103,7 +103,7 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
       .getExam(examId)
       .then((loadedExam) => {
         setExam(loadedExam);
-        setProfileId(loadedExam.profiles[0]?.id ?? "");
+        setProfileId((current) => current || loadedExam.profiles[0]?.id || "");
       })
       .catch((reason: Error) => setError(reason.message));
   }, [api, examId]);

@@ -70,6 +70,7 @@ export interface ExamApi {
   ): Promise<{ questionId: string; bookmarked: boolean }>;
   getHistory(): Promise<{ attempts: Attempt[]; reviews: AIReview[] }>;
   testAI(): Promise<{ ok: boolean; model?: string; message?: string }>;
+  getSettingsStatus(): Promise<{ aiConfigured: boolean; speechConfigured: boolean }>;
 }
 
 async function jsonRequest<T>(url: string, init?: RequestInit): Promise<T> {
@@ -174,6 +175,12 @@ export class HttpExamApi implements ExamApi {
     return jsonRequest<{ ok: boolean; model?: string; message?: string }>(
       "/api/settings/ai/test",
       { method: "POST", body: "{}" },
+    );
+  }
+
+  getSettingsStatus() {
+    return jsonRequest<{ aiConfigured: boolean; speechConfigured: boolean }>(
+      "/api/settings/status",
     );
   }
 }
@@ -461,6 +468,11 @@ export class MockExamApi implements ExamApi {
   async testAI() {
     await this.delay();
     return { ok: true, model: "mock-model" };
+  }
+
+  async getSettingsStatus() {
+    await this.delay();
+    return { aiConfigured: true, speechConfigured: true };
   }
 }
 

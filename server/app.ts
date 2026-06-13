@@ -662,6 +662,13 @@ export function createApp(options: CreateAppOptions) {
     response.status(result.ok ? 200 : 502).json(result);
   });
 
+  app.get("/api/settings/status", (_request, response) => {
+    response.json({
+      aiConfigured: Boolean(aiProvider),
+      speechConfigured: Boolean(speechProvider),
+    });
+  });
+
   app.use((error: unknown, _request: express.Request, response: express.Response, _next: express.NextFunction) => {
     if (error instanceof multer.MulterError) {
       return response.status(error.code === "LIMIT_FILE_SIZE" ? 413 : 400).json({

@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
-import type { ExamApi } from "../../client/src/api.js";
+import type { ExamApi, ExamDetail } from "../../client/src/api.js";
 import { Workspace } from "../../client/src/screens/Workspace.js";
 
 const exam = {
@@ -77,6 +77,7 @@ function createApi(): ExamApi {
       .mockResolvedValue({ questionId: "q-1", bookmarked: true }),
     getHistory: vi.fn(),
     testAI: vi.fn(),
+    getSettingsStatus: vi.fn(),
   };
 }
 
@@ -94,6 +95,50 @@ function renderWorkspace(api: ExamApi, route: string) {
 }
 
 describe("Workspace", () => {
+  it("keeps the run profile when exam metadata resolves later", async () => {
+    let resolveExam!: (value: ExamDetail) => void;
+    const api = createApi();
+    const examWithProfiles = {
+      ...exam,
+      profiles: [
+        ...exam.profiles,
+        { id: "strict", name: "Strict", description: "Strict", tone: "strict" as const },
+      ],
+    };
+    vi.mocked(api.getExam).mockReturnValue(new Promise((resolve) => {
+      resolveExam = resolve;
+    }));
+    vi.mocked(api.getExamRun).mockResolvedValue({
+      run: {
+        id: "run-1",
+        examId: "exam",
+        profileId: "strict",
+        questionCount: 1,
+        currentPosition: 1,
+        status: "active",
+        items: [
+          { id: "i1", questionId: "q-1", position: 1, status: "active", sessionId: "session", xp: 0 },
+        ],
+        createdAt: "2026-06-13T00:00:00.000Z",
+      },
+      session: {
+        id: "session",
+        examId: "exam",
+        questionId: "q-1",
+        mode: "exam",
+        profileId: "strict",
+        status: "active",
+        followUpCount: 0,
+        createdAt: "2026-06-13T00:00:00.000Z",
+      },
+    });
+
+    renderWorkspace(api, "/exams/exam/workspace/q-1?mode=exam&run=run-1");
+    resolveExam(examWithProfiles);
+
+    expect(await screen.findByLabelText(/профиль экзаменатора/i)).toHaveValue("strict");
+  });
+
   it("creates a three-question run only after the user starts the exam", async () => {
     const user = userEvent.setup();
     const api = createApi();

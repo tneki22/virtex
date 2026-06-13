@@ -124,6 +124,19 @@ describe("exam API", () => {
     expect((await request(app).post("/api/transcriptions")).status).toBe(503);
   });
 
+  it("reports provider configuration without exposing credentials", async () => {
+    const app = createApp({
+      database,
+      exams: [exam],
+      aiProvider: null,
+      speechProvider: { model: "whisper", transcribe: vi.fn() },
+    });
+    expect((await request(app).get("/api/settings/status")).body).toEqual({
+      aiConfigured: false,
+      speechConfigured: true,
+    });
+  });
+
   it("runs a sequential multi-question exam", async () => {
     const multiQuestionExam: ExamPackage = {
       ...exam,

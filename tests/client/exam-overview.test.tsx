@@ -55,6 +55,7 @@ function createApi(): ExamApi {
     updateBookmark: vi.fn(),
     getHistory: vi.fn(),
     testAI: vi.fn(),
+    getSettingsStatus: vi.fn(),
   };
 }
 
