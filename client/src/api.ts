@@ -4,12 +4,14 @@ import type {
   ExamPackage,
   ExamQuestion,
   ExamQuestionCount,
+  ExamRun,
   ExamRunStep,
   SessionMessage,
   SourceDocument,
   StudyMode,
   StudySession,
 } from "../../shared/contracts.js";
+import { calculateExamRunSummary, selectQuestionIds } from "../../shared/exam-run.js";
 
 export interface ExamSummary {
   id: string;
@@ -208,12 +210,24 @@ const mockExam: ExamPackage = {
   styleGuide: "Пиши точно.",
 };
 
+const mockBaseQuestion = mockExam.questions[0];
+mockExam.questions = Array.from({ length: 5 }, (_, index) => ({
+  ...mockBaseQuestion,
+  id: `q-${index + 1}`,
+  officialNumber: index + 1,
+  officialText: `${mockBaseQuestion.officialText} Вариант ${index + 1}.`,
+  displayText: `${mockBaseQuestion.displayText}: вопрос ${index + 1}`,
+}));
+
 export class MockExamApi implements ExamApi {
   private followUps = new Map<string, number>();
   private notes = new Map<string, string>();
   private bookmarks = new Set<string>();
   private attempts: Attempt[] = [];
   private reviews: AIReview[] = [];
+  private sessions = new Map<string, StudySession>();
+  private runs = new Map<string, ExamRun>();
+  private runSessions = new Map<string, { runId: string; position: number }>();
 
   constructor(private readonly latency = 550) {}
 
@@ -263,7 +277,7 @@ export class MockExamApi implements ExamApi {
     await this.delay();
     const id = crypto.randomUUID();
     this.followUps.set(id, 0);
-    return {
+    const session: StudySession = {
       id,
       examId: mockExam.id,
       questionId: input.questionId ?? mockExam.questions[0].id,
@@ -273,18 +287,84 @@ export class MockExamApi implements ExamApi {
       followUpCount: 0,
       createdAt: new Date().toISOString(),
     };
+    this.sessions.set(id, session);
+    return session;
   }
 
-  async createExamRun(_input: Parameters<ExamApi["createExamRun"]>[0]): Promise<ExamRunStep> {
-    throw new Error("Mock exam runs are not initialized");
+  async createExamRun(input: Parameters<ExamApi["createExamRun"]>[0]): Promise<ExamRunStep> {
+    await this.delay();
+    const questionIds = selectQuestionIds(
+      mockExam.questions.map((question) => question.id),
+      input.questionCount,
+      () => 0,
+    );
+    const run: ExamRun = {
+      id: crypto.randomUUID(),
+      examId: input.examId,
+      profileId: input.profileId,
+      questionCount: input.questionCount,
+      currentPosition: 1,
+      status: "active",
+      items: questionIds.map((questionId, index) => ({
+        id: crypto.randomUUID(),
+        questionId,
+        position: index + 1,
+        status: index === 0 ? "active" : "pending",
+        xp: 0,
+      })),
+      createdAt: new Date().toISOString(),
+    };
+    const session = await this.createSession({
+      examId: input.examId,
+      questionId: questionIds[0],
+      mode: "exam",
+      profileId: input.profileId,
+    });
+    run.items[0].sessionId = session.id;
+    this.runs.set(run.id, run);
+    this.runSessions.set(session.id, { runId: run.id, position: 1 });
+    return { run, session };
   }
 
-  async getExamRun(_runId: string): Promise<ExamRunStep> {
-    throw new Error("Mock exam runs are not initialized");
+  async getExamRun(runId: string): Promise<ExamRunStep> {
+    await this.delay();
+    const run = this.runs.get(runId);
+    if (!run) throw new Error("Exam run not found");
+    if (run.status === "completed") {
+      return { run, summary: calculateExamRunSummary(run.items, mockExam.thresholds) };
+    }
+    const active = run.items.find((item) => item.status === "active");
+    const session = active?.sessionId ? this.sessions.get(active.sessionId) : undefined;
+    return { run, ...(session ? { session } : {}) };
   }
 
-  async advanceExamRun(_runId: string): Promise<ExamRunStep> {
-    throw new Error("Mock exam runs are not initialized");
+  async advanceExamRun(runId: string): Promise<ExamRunStep> {
+    await this.delay();
+    const run = this.runs.get(runId);
+    if (!run) throw new Error("Exam run not found");
+    if (run.status === "completed") {
+      return { run, summary: calculateExamRunSummary(run.items, mockExam.thresholds) };
+    }
+    if (run.items.some((item) => item.status === "active")) {
+      throw new Error("Current question is not completed");
+    }
+    const next = run.items.find((item) => item.status === "pending");
+    if (!next) {
+      run.status = "completed";
+      run.completedAt = new Date().toISOString();
+      return { run, summary: calculateExamRunSummary(run.items, mockExam.thresholds) };
+    }
+    next.status = "active";
+    run.currentPosition = next.position;
+    const session = await this.createSession({
+      examId: run.examId,
+      questionId: next.questionId,
+      mode: "exam",
+      profileId: run.profileId,
+    });
+    next.sessionId = session.id;
+    this.runSessions.set(session.id, { runId, position: next.position });
+    return { run, session };
   }
 
   async sendMessage(sessionId: string, content: string) {
@@ -318,6 +398,7 @@ export class MockExamApi implements ExamApi {
       };
     }
     const score = Math.min(96, 55 + Math.floor(answer.length / 4));
+    const xp = score >= 80 ? 20 : 10;
     const review: AIReview = {
       action: "final", examinerMessage: "Ответ проверен.", baseScore: score,
       personaVerdict: score >= 80 ? "Готов" : "Нужно повторить",
@@ -327,10 +408,22 @@ export class MockExamApi implements ExamApi {
     };
     this.reviews.unshift(review);
     this.attempts.unshift({
-      id: crypto.randomUUID(), sessionId, questionId: "q-1", answer, baseScore: score,
-      xp: score >= 80 ? 20 : 10, createdAt: new Date().toISOString(),
+      id: crypto.randomUUID(), sessionId, questionId: this.sessions.get(sessionId)?.questionId ?? "q-1", answer, baseScore: score,
+      xp, createdAt: new Date().toISOString(),
     });
-    return { ...review, xp: score >= 80 ? 20 : 10 };
+    const binding = this.runSessions.get(sessionId);
+    if (binding) {
+      const run = this.runs.get(binding.runId)!;
+      const item = run.items.find((candidate) => candidate.position === binding.position)!;
+      item.status = "completed";
+      item.baseScore = score;
+      item.xp = xp;
+      if (run.items.every((candidate) => candidate.status === "completed")) {
+        run.status = "completed";
+        run.completedAt = new Date().toISOString();
+      }
+    }
+    return { ...review, xp };
   }
 
   async updateNote(questionId: string, note: string) {

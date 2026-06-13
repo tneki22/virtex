@@ -93,6 +93,118 @@ function renderWorkspace(api: ExamApi, route: string) {
 }
 
 describe("Workspace", () => {
+  it("creates a three-question run only after the user starts the exam", async () => {
+    const user = userEvent.setup();
+    const api = createApi();
+    vi.mocked(api.createExamRun).mockResolvedValue({
+      run: {
+        id: "run-1",
+        examId: "exam",
+        profileId: "neutral",
+        questionCount: 3,
+        currentPosition: 1,
+        status: "active",
+        items: [
+          { id: "i1", questionId: "q-1", position: 1, status: "active", sessionId: "session", xp: 0 },
+          { id: "i2", questionId: "q-2", position: 2, status: "pending", xp: 0 },
+          { id: "i3", questionId: "q-3", position: 3, status: "pending", xp: 0 },
+        ],
+        createdAt: "2026-06-13T00:00:00.000Z",
+      },
+      session: {
+        id: "session",
+        examId: "exam",
+        questionId: "q-1",
+        mode: "exam",
+        profileId: "neutral",
+        status: "active",
+        followUpCount: 0,
+        createdAt: "2026-06-13T00:00:00.000Z",
+      },
+    });
+    renderWorkspace(api, "/exams/exam/workspace/random?mode=exam&count=3");
+
+    await user.click(await screen.findByRole("button", { name: /начать экзамен/i }));
+    expect(api.createExamRun).toHaveBeenCalledWith({
+      examId: "exam",
+      profileId: "neutral",
+      questionCount: 3,
+    });
+  });
+
+  it("advances a run and renders its final summary", async () => {
+    const user = userEvent.setup();
+    const api = createApi();
+    const run = {
+      id: "run-1",
+      examId: "exam",
+      profileId: "neutral",
+      questionCount: 3 as const,
+      currentPosition: 3,
+      status: "active" as const,
+      items: [
+        { id: "i1", questionId: "q-1", position: 1, status: "completed" as const, baseScore: 84, xp: 20 },
+        { id: "i2", questionId: "q-2", position: 2, status: "completed" as const, baseScore: 70, xp: 10 },
+        { id: "i3", questionId: "q-1", position: 3, status: "active" as const, sessionId: "session", xp: 0 },
+      ],
+      createdAt: "2026-06-13T00:00:00.000Z",
+    };
+    vi.mocked(api.getExamRun).mockResolvedValue({
+      run,
+      session: {
+        id: "session",
+        examId: "exam",
+        questionId: "q-1",
+        mode: "exam",
+        profileId: "neutral",
+        status: "active",
+        followUpCount: 0,
+        createdAt: "2026-06-13T00:00:00.000Z",
+      },
+    });
+    vi.mocked(api.review).mockResolvedValue({
+      action: "final",
+      examinerMessage: "Ответ принят.",
+      baseScore: 40,
+      personaVerdict: "Повторить",
+      strengths: [],
+      gaps: ["Детали"],
+      errors: [],
+      citations: [],
+      advice: "Повторите тему.",
+      packageVersion: "1.0.0",
+      promptVersion: "v1",
+      schemaVersion: "v1",
+      xp: 10,
+    });
+    vi.mocked(api.advanceExamRun).mockResolvedValue({
+      run: { ...run, status: "completed", items: [
+        run.items[0],
+        run.items[1],
+        { ...run.items[2], status: "completed", baseScore: 40, xp: 10 },
+      ] },
+      summary: {
+        averageScore: 65,
+        ready: 1,
+        almostReady: 1,
+        review: 1,
+        unscored: 0,
+        totalXp: 40,
+        results: [],
+      },
+    });
+    renderWorkspace(api, "/exams/exam/workspace/q-1?mode=exam&run=run-1");
+
+    const editor = await screen.findByRole("textbox", { name: /ответ на вопрос/i });
+    await user.type(editor, "Финальный полный ответ");
+    await user.click(screen.getByRole("button", { name: /отправить ответ/i }));
+    await user.click(await screen.findByRole("button", { name: /завершить экзамен/i }));
+
+    expect(await screen.findByText("65/100")).toBeInTheDocument();
+    expect(screen.getByText(/40 XP/i)).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: /ответ на вопрос/i })).not.toBeInTheDocument();
+  });
+
   it("shows the reference immediately in study mode", async () => {
     renderWorkspace(createApi(), "/exams/exam/workspace/q-1?mode=study");
 

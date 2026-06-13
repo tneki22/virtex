@@ -15,13 +15,21 @@ import {
 import type { CSSProperties } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import type { StudyMode, StudySession } from "../../../shared/contracts.js";
+import type {
+  ExamQuestionCount,
+  ExamRun,
+  ExamRunSummary as ExamRunSummaryData,
+  StudyMode,
+  StudySession,
+} from "../../../shared/contracts.js";
+import { assertExamQuestionCount } from "../../../shared/exam-run.js";
 import { readinessFromScore } from "../../../shared/progress.js";
 import { normalizeStudyMode } from "../../../shared/study-mode.js";
 import type { ExamApi, ExamDetail, QuestionDetail, ReviewResponse } from "../api.js";
 import { api as defaultApi } from "../api.js";
 import { ErrorState, LoadingState } from "../components/AppShell.js";
 import { ExaminerProfilePicker } from "../components/ExaminerProfilePicker.js";
+import { ExamRunSummary } from "../components/ExamRunSummary.js";
 import { PanelResizeHandle } from "../components/PanelResizeHandle.js";
 import { ProgressiveText } from "../components/ProgressiveText.js";
 import { MIN_LEFT, MIN_RIGHT, usePanelLayout } from "../hooks/usePanelLayout.js";
@@ -66,9 +74,19 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
   const [error, setError] = useState("");
   const [leftOpen, setLeftOpen] = useState(false);
   const [rightOpen, setRightOpen] = useState(false);
-  const startedRandomExam = useRef(false);
   const searchInput = useRef<HTMLInputElement>(null);
   const panelLayout = usePanelLayout();
+  const runId = searchParams.get("run");
+  const questionCount = useMemo<ExamQuestionCount>(() => {
+    try {
+      return assertExamQuestionCount(Number(searchParams.get("count") ?? 1));
+    } catch {
+      return 1;
+    }
+  }, [searchParams]);
+  const [examRun, setExamRun] = useState<ExamRun | null>(null);
+  const [examSummary, setExamSummary] = useState<ExamRunSummaryData | null>(null);
+  const [loadingRun, setLoadingRun] = useState(false);
 
   useEffect(() => {
     void api
@@ -81,17 +99,25 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
   }, [api, examId]);
 
   useEffect(() => {
-    if (!exam || mode !== "exam" || routeQuestionId !== "random" || startedRandomExam.current) return;
-    startedRandomExam.current = true;
-    void api
-      .createSession({ examId, mode, profileId: exam.profiles[0].id })
-      .then((created) => {
-        setSession(created);
-        setSelectedQuestionId(created.questionId);
-        navigate(`/exams/${examId}/workspace/${created.questionId}?mode=exam`, { replace: true });
+    if (!runId || examRun?.id === runId) return;
+    void api.getExamRun(runId)
+      .then((step) => {
+        setExamRun(step.run);
+        setExamSummary(step.summary ?? null);
+        setProfileId(step.run.profileId);
+        if (step.session) {
+          setSession(step.session);
+          setSelectedQuestionId(step.session.questionId);
+          if (routeQuestionId !== step.session.questionId) {
+            navigate(
+              `/exams/${examId}/workspace/${step.session.questionId}?mode=exam&run=${runId}`,
+              { replace: true },
+            );
+          }
+        }
       })
       .catch((reason: Error) => setError(reason.message));
-  }, [api, exam, examId, mode, navigate, profileId, routeQuestionId]);
+  }, [api, examId, examRun?.id, navigate, routeQuestionId, runId]);
 
   useEffect(() => {
     if (routeQuestionId && routeQuestionId !== "random") {
@@ -110,18 +136,18 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
       .then((loadedQuestion) => {
         setQuestion(loadedQuestion);
         setNote(loadedQuestion.note);
-        const draftKey = `virtex:draft:${examId}:${loadedQuestion.id}:${mode}`;
+        const draftKey = `virtex:draft:${examId}:${loadedQuestion.id}:${runId ?? mode}`;
         setAnswer(localStorage.getItem(draftKey) ?? "");
       })
       .catch((reason: Error) => setError(reason.message));
-  }, [api, examId, mode, selectedQuestionId]);
+  }, [api, examId, mode, runId, selectedQuestionId]);
 
   const answersLocked = mode === "exam" && !completed;
 
   useEffect(() => {
     if (!question) return;
-    localStorage.setItem(`virtex:draft:${examId}:${question.id}:${mode}`, answer);
-  }, [answer, examId, mode, question]);
+    localStorage.setItem(`virtex:draft:${examId}:${question.id}:${runId ?? mode}`, answer);
+  }, [answer, examId, mode, question, runId]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -197,7 +223,7 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
             },
           };
         });
-        localStorage.removeItem(`virtex:draft:${examId}:${question.id}:${mode}`);
+        localStorage.removeItem(`virtex:draft:${examId}:${question.id}:${runId ?? mode}`);
       }
     } catch (reason) {
       setDialogueTurns((turns) => turns.filter((turn) => turn.id !== submittedTurn.id));
@@ -214,7 +240,7 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
     setDialogueTurns([]);
     setCompleted(false);
     setAnswer("");
-    localStorage.removeItem(`virtex:draft:${examId}:${question.id}:${mode}`);
+    localStorage.removeItem(`virtex:draft:${examId}:${question.id}:${runId ?? mode}`);
   }
 
   function selectQuestion(id: string) {
@@ -236,8 +262,97 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
     await api.updateNote(question.id, note);
   }
 
+  async function startExamRun() {
+    if (!exam || !profileId || loadingRun) return;
+    setLoadingRun(true);
+    setError("");
+    try {
+      const step = await api.createExamRun({
+        examId: exam.id,
+        profileId,
+        questionCount,
+      });
+      if (!step.session) throw new Error("Сервер не вернул первый вопрос экзамена");
+      setExamRun(step.run);
+      setSession(step.session);
+      navigate(
+        `/exams/${exam.id}/workspace/${step.session.questionId}?mode=exam&run=${step.run.id}`,
+        { replace: true },
+      );
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Не удалось начать экзамен");
+    } finally {
+      setLoadingRun(false);
+    }
+  }
+
+  async function advanceExamRun() {
+    if (!examRun || loadingRun) return;
+    setLoadingRun(true);
+    setError("");
+    try {
+      const step = await api.advanceExamRun(examRun.id);
+      setExamRun(step.run);
+      if (step.summary) {
+        setExamSummary(step.summary);
+        return;
+      }
+      if (!step.session) throw new Error("Сервер не вернул следующий вопрос");
+      setSession(step.session);
+      setSelectedQuestionId(step.session.questionId);
+      setReview(null);
+      setDialogueTurns([]);
+      setCompleted(false);
+      setAnswer("");
+      navigate(
+        `/exams/${examId}/workspace/${step.session.questionId}?mode=exam&run=${examRun.id}`,
+        { replace: true },
+      );
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Не удалось продолжить экзамен");
+    } finally {
+      setLoadingRun(false);
+    }
+  }
+
   if (error && !exam) return <ErrorState message={error} />;
-  if (!exam || !question) return <LoadingState label="Открываем рабочее пространство" />;
+  if (!exam) return <LoadingState label="Открываем рабочее пространство" />;
+  if (mode === "exam" && routeQuestionId === "random") {
+    return (
+      <div className="workspace-page exam-setup-page">
+        <header className="workspace-header">
+          <Link to={`/exams/${exam.id}`} className="workspace-brand"><ArrowLeft size={17} /> Virtex</Link>
+          <div className="workspace-title"><span>{exam.title}</span><ChevronRight size={14} /><strong>Экзамен</strong></div>
+        </header>
+        <main className="exam-setup-card">
+          <p className="eyebrow">{questionCount} {questionCount === 1 ? "вопрос" : "вопроса"}</p>
+          <h1>Настройка экзамена</h1>
+          <p>Вопросы выбираются случайно и не повторяются в пределах серии.</p>
+          <ExaminerProfilePicker
+            profiles={exam.profiles}
+            value={profileId}
+            onChange={setProfileId}
+          />
+          {error && <ErrorState message={error} />}
+          <button className="primary-button" disabled={loadingRun} onClick={() => void startExamRun()}>
+            {loadingRun ? "Запускаем…" : "Начать экзамен"}
+          </button>
+        </main>
+      </div>
+    );
+  }
+  if (examSummary) {
+    return (
+      <div className="workspace-page exam-summary-page">
+        <header className="workspace-header">
+          <Link to={`/exams/${exam.id}`} className="workspace-brand"><ArrowLeft size={17} /> Virtex</Link>
+          <div className="workspace-title"><span>{exam.title}</span><ChevronRight size={14} /><strong>Итоги</strong></div>
+        </header>
+        <main><ExamRunSummary examId={exam.id} summary={examSummary} questions={exam.questions} /></main>
+      </div>
+    );
+  }
+  if (!question) return <LoadingState label="Открываем рабочее пространство" />;
 
   return (
     <div className="workspace-page">
@@ -317,13 +432,14 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
             <span className={`readiness-dot ${question.progress.readiness}`} />
             {readinessLabels[question.progress.readiness]}
             {question.progress.bestScore !== undefined && <strong>{question.progress.bestScore}/100</strong>}
+            {examRun && <strong>{examRun.currentPosition} из {examRun.questionCount}</strong>}
             <span>{question.progress.attempts} попыток</span>
           </div>
 
           <ExaminerProfilePicker
             profiles={exam.profiles}
             value={profileId}
-            disabled={Boolean(session)}
+            disabled={Boolean(session || examRun)}
             onChange={setProfileId}
           />
 
@@ -378,10 +494,15 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
               {review.xp > 0 && <span className="xp-badge">+{review.xp} XP</span>}
             </section>
           )}
-          {completed && (
-            <button className="secondary-button new-attempt-button" onClick={startNewAttempt}>
-              Новая попытка
+          {completed && examRun && (
+            <button className="primary-button new-attempt-button" disabled={loadingRun} onClick={() => void advanceExamRun()}>
+              {examRun.currentPosition < examRun.questionCount
+                ? `Следующий вопрос ${examRun.currentPosition + 1} из ${examRun.questionCount}`
+                : "Завершить экзамен"}
             </button>
+          )}
+          {completed && !examRun && (
+            <button className="secondary-button new-attempt-button" onClick={startNewAttempt}>Новая попытка</button>
           )}
         </main>
 

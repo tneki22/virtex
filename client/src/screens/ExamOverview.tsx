@@ -1,11 +1,10 @@
 import { ArrowRight, BookOpenText, GraduationCap } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
+import type { ExamQuestionCount } from "../../../shared/contracts.js";
 import type { ExamApi, ExamDetail } from "../api.js";
 import { api as defaultApi } from "../api.js";
 import { AppShell, ErrorState, LoadingState } from "../components/AppShell.js";
-
-type ExamQuestionCount = 1 | 2 | 3 | 5;
 
 const allowedCounts: ExamQuestionCount[] = [1, 2, 3, 5];
 

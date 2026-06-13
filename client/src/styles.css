@@ -127,6 +127,26 @@ h1, h2 { font-family: "Newsreader Variable", Georgia, serif; font-weight: 560; l
 .question-count-picker input:checked + span { border-color: var(--accent); background: var(--accent); color: white; }
 .question-count-picker input:focus-visible + span { outline: 3px solid rgba(138, 48, 47, .22); outline-offset: 2px; }
 .mode-button { width: 100%; justify-content: space-between; border: 0; border-top: 1px solid var(--line); padding: 15px 0 0; background: transparent; color: var(--ink); cursor: pointer; }
+.exam-setup-page, .exam-summary-page { overflow-y: auto; }
+.exam-setup-card { width: min(620px, calc(100vw - 40px)); margin: 10vh auto 60px; padding: 34px; border: 1px solid var(--line-strong); background: var(--paper-strong); box-shadow: var(--shadow); }
+.exam-setup-card h1 { font-size: clamp(38px, 5vw, 58px); }
+.exam-setup-card > p:not(.eyebrow) { margin: 12px 0 26px; color: var(--muted); line-height: 1.65; }
+.exam-setup-card .examiner-profile-picker { grid-template-columns: 1fr; margin-bottom: 22px; }
+.exam-setup-card .primary-button { width: 100%; }
+.exam-summary-page > main { padding: 54px 20px 80px; }
+.exam-run-summary { width: min(820px, 100%); margin: 0 auto; }
+.exam-run-summary h1 { font-size: clamp(42px, 6vw, 68px); }
+.summary-score { margin: 28px 0; display: flex; align-items: baseline; color: var(--accent); }
+.summary-score strong { font-family: "Newsreader Variable", serif; font-size: 76px; line-height: 1; }
+.summary-score span { font-size: 16px; }
+.summary-metrics { display: grid; grid-template-columns: repeat(4, 1fr); margin: 0 0 28px; border: 1px solid var(--line); }
+.summary-metrics div { padding: 18px; border-right: 1px solid var(--line); }
+.summary-metrics div:last-child { border-right: 0; }
+.summary-metrics dt { color: var(--muted); font-size: 9px; text-transform: uppercase; letter-spacing: .08em; }
+.summary-metrics dd { margin: 7px 0 0; font-family: "Newsreader Variable", serif; font-size: 24px; }
+.summary-results { border-top: 1px solid var(--line-strong); }
+.summary-results > div { display: flex; justify-content: space-between; gap: 20px; padding: 14px 4px; border-bottom: 1px solid var(--line); font-size: 12px; }
+.summary-actions { margin-top: 28px; display: flex; gap: 10px; }
 
 .workspace-page { height: 100vh; overflow: hidden; background: var(--paper); }
 .workspace-header { height: 58px; display: grid; grid-template-columns: 280px 1fr auto; align-items: center; padding: 0 18px; border-bottom: 1px solid var(--line); background: var(--paper-strong); z-index: 50; position: relative; }
