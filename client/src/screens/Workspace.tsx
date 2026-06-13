@@ -2,10 +2,8 @@ import {
   ArrowLeft,
   Bookmark,
   BookmarkCheck,
-  BookOpen,
   CheckCircle2,
   ChevronRight,
-  FileText,
   Menu,
   MessageSquare,
   PanelRightOpen,
@@ -23,10 +21,17 @@ import { normalizeStudyMode } from "../../../shared/study-mode.js";
 import type { ExamApi, ExamDetail, QuestionDetail, ReviewResponse } from "../api.js";
 import { api as defaultApi } from "../api.js";
 import { ErrorState, LoadingState } from "../components/AppShell.js";
+import { ExaminerProfilePicker } from "../components/ExaminerProfilePicker.js";
 import { PanelResizeHandle } from "../components/PanelResizeHandle.js";
+import { ProgressiveText } from "../components/ProgressiveText.js";
 import { MIN_LEFT, MIN_RIGHT, usePanelLayout } from "../hooks/usePanelLayout.js";
 
-type RightTab = "sources" | "reference" | "notes";
+type RightTab = "answers" | "notes";
+type DialogueTurn = {
+  id: string;
+  role: "student" | "examiner";
+  text: string;
+};
 
 const modeLabels: Record<StudyMode, string> = {
   study: "Изучение",
@@ -52,18 +57,15 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
   const [profileId, setProfileId] = useState("");
   const [answer, setAnswer] = useState("");
   const [review, setReview] = useState<ReviewResponse | null>(null);
-  const [dialogueTurns, setDialogueTurns] = useState<Array<{ answer: string; message: string }>>([]);
-  const [referenceRevealed, setReferenceRevealed] = useState(false);
+  const [dialogueTurns, setDialogueTurns] = useState<DialogueTurn[]>([]);
   const [completed, setCompleted] = useState(false);
-  const [rightTab, setRightTab] = useState<RightTab>("sources");
-  const [sourceText, setSourceText] = useState("");
+  const [rightTab, setRightTab] = useState<RightTab>("answers");
   const [note, setNote] = useState("");
   const [search, setSearch] = useState("");
   const [loadingReview, setLoadingReview] = useState(false);
   const [error, setError] = useState("");
   const [leftOpen, setLeftOpen] = useState(false);
   const [rightOpen, setRightOpen] = useState(false);
-  const [sourcePulse, setSourcePulse] = useState(false);
   const startedRandomExam = useRef(false);
   const searchInput = useRef<HTMLInputElement>(null);
   const panelLayout = usePanelLayout();
@@ -103,7 +105,6 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
     setReview(null);
     setDialogueTurns([]);
     setCompleted(false);
-    setReferenceRevealed(false);
     void api
       .getQuestion(examId, selectedQuestionId)
       .then((loadedQuestion) => {
@@ -115,17 +116,7 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
       .catch((reason: Error) => setError(reason.message));
   }, [api, examId, mode, selectedQuestionId]);
 
-  const sourcesLocked = mode === "exam" && !completed;
-  const activeSource = question?.sources[0];
-
-  useEffect(() => {
-    if (!question || !activeSource || rightTab !== "sources" || sourcesLocked) return;
-    setSourceText("");
-    void api
-      .getDocument(examId, activeSource.documentId, activeSource.page)
-      .then((document) => setSourceText((document.fragments ?? []).map((fragment) => fragment.text).join("\n\n")))
-      .catch((reason: Error) => setError(reason.message));
-  }, [activeSource, api, examId, question, rightTab, sourcesLocked]);
+  const answersLocked = mode === "exam" && !completed;
 
   useEffect(() => {
     if (!question) return;
@@ -172,18 +163,26 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
   async function submitAnswer() {
     if (!answer.trim() || !question || loadingReview || completed) return;
     const submittedAnswer = answer.trim();
+    const submittedTurn: DialogueTurn = {
+      id: crypto.randomUUID(),
+      role: "student",
+      text: submittedAnswer,
+    };
+    setDialogueTurns((turns) => [...turns, submittedTurn]);
     setLoadingReview(true);
     setError("");
     try {
       const currentSession = await ensureSession();
       const result = await api.review(currentSession.id, submittedAnswer);
       setReview(result);
+      setDialogueTurns((turns) => [
+        ...turns,
+        { id: crypto.randomUUID(), role: "examiner", text: result.examinerMessage },
+      ]);
       if (result.action === "clarify") {
-        setDialogueTurns((turns) => [...turns, { answer: submittedAnswer, message: result.examinerMessage }]);
         setAnswer("");
       } else {
         setCompleted(true);
-        setReferenceRevealed(true);
         setQuestion((current) => {
           if (!current) return current;
           const bestScore = result.baseScore === undefined
@@ -201,6 +200,7 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
         localStorage.removeItem(`virtex:draft:${examId}:${question.id}:${mode}`);
       }
     } catch (reason) {
+      setDialogueTurns((turns) => turns.filter((turn) => turn.id !== submittedTurn.id));
       setError(reason instanceof Error ? reason.message : "Не удалось проверить ответ");
     } finally {
       setLoadingReview(false);
@@ -214,7 +214,6 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
     setDialogueTurns([]);
     setCompleted(false);
     setAnswer("");
-    setReferenceRevealed(false);
     localStorage.removeItem(`virtex:draft:${examId}:${question.id}:${mode}`);
   }
 
@@ -237,13 +236,6 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
     await api.updateNote(question.id, note);
   }
 
-  function openCitation() {
-    setRightTab("sources");
-    setRightOpen(true);
-    setSourcePulse(true);
-    window.setTimeout(() => setSourcePulse(false), 700);
-  }
-
   if (error && !exam) return <ErrorState message={error} />;
   if (!exam || !question) return <LoadingState label="Открываем рабочее пространство" />;
 
@@ -258,10 +250,7 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
         </div>
         <div className="workspace-tools">
           <button className="icon-button tablet-only" onClick={() => setLeftOpen(true)} aria-label="Открыть список вопросов"><Menu size={19} /></button>
-          <button className="icon-button tablet-only" onClick={() => setRightOpen(true)} aria-label="Открыть материалы"><PanelRightOpen size={19} /></button>
-          <select value={profileId} onChange={(event) => setProfileId(event.target.value)} aria-label="Профиль экзаменатора" disabled={Boolean(session)}>
-            {exam.profiles.map((profile) => <option value={profile.id} key={profile.id}>{profile.name}</option>)}
-          </select>
+          <button className="icon-button tablet-only" onClick={() => setRightOpen(true)} aria-label="Открыть ответы и заметки"><PanelRightOpen size={19} /></button>
         </div>
       </header>
 
@@ -328,28 +317,26 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
             <span className={`readiness-dot ${question.progress.readiness}`} />
             {readinessLabels[question.progress.readiness]}
             {question.progress.bestScore !== undefined && <strong>{question.progress.bestScore}/100</strong>}
-            {!referenceRevealed && mode !== "exam" && (
-              <button
-                className="inline-reveal"
-                onClick={() => {
-                  setReferenceRevealed(true);
-                  setRightTab("reference");
-                  setRightOpen(true);
-                }}
-              >
-                Показать эталон
-              </button>
-            )}
             <span>{question.progress.attempts} попыток</span>
           </div>
+
+          <ExaminerProfilePicker
+            profiles={exam.profiles}
+            value={profileId}
+            disabled={Boolean(session)}
+            onChange={setProfileId}
+          />
 
           <section className="answer-editor-section">
             <div className="editor-label"><span>{review?.action === "clarify" ? "Ваше уточнение" : "Ваш ответ"}</span><small>{completed ? "Попытка завершена" : "Черновик сохраняется локально"}</small></div>
             {dialogueTurns.length > 0 && (
               <div className="dialogue-trail" aria-label="Предыдущие реплики">
-                {dialogueTurns.map((turn, index) => (
-                  <div className="dialogue-turn" key={`${index}-${turn.answer}`}>
-                    <p><strong>Ваш ответ:</strong> {turn.answer}</p>
+                {dialogueTurns.map((turn) => (
+                  <div className={`dialogue-turn role-${turn.role}`} key={turn.id}>
+                    <strong>{turn.role === "student" ? "Вы" : "Экзаменатор"}</strong>
+                    {turn.role === "examiner"
+                      ? <ProgressiveText text={turn.text} />
+                      : <p>{turn.text}</p>}
                   </div>
                 ))}
               </div>
@@ -381,7 +368,6 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
                 <div><p className="eyebrow">Ответ экзаменатора</p><strong>{review.personaVerdict}</strong></div>
                 {review.baseScore !== undefined && <div className="score-seal"><strong>{review.baseScore}</strong><span>/100</span></div>}
               </div>
-              <p className="review-message staged-line">{review.examinerMessage}</p>
               {(review.strengths.length > 0 || review.gaps.length > 0 || review.errors.length > 0) && (
                 <div className="review-columns staged-line">
                   <div><h3>Сильные стороны</h3>{review.strengths.map((item) => <p key={item}>+ {item}</p>)}</div>
@@ -389,7 +375,6 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
                 </div>
               )}
               <p className="review-advice staged-line"><strong>Следующий шаг:</strong> {review.advice}</p>
-              {review.citations.length > 0 && <button className="text-button" onClick={openCitation}><FileText size={15} /> Открыть источник проверки</button>}
               {review.xp > 0 && <span className="xp-badge">+{review.xp} XP</span>}
             </section>
           )}
@@ -410,31 +395,27 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
           onReset={panelLayout.reset}
         />
 
-        <aside className={`reference-panel ${rightOpen ? "is-open" : ""}`} aria-label="Материалы к вопросу">
-          <div className="panel-mobile-head"><strong>Материалы</strong><button className="icon-button" onClick={() => setRightOpen(false)} aria-label="Закрыть материалы"><X size={18} /></button></div>
+        <aside className={`reference-panel ${rightOpen ? "is-open" : ""}`} aria-label="Ответы и заметки">
+          <div className="panel-mobile-head"><strong>Ответы и заметки</strong><button className="icon-button" onClick={() => setRightOpen(false)} aria-label="Закрыть панель"><X size={18} /></button></div>
           <div className="reference-tabs" role="tablist">
-            <button role="tab" aria-selected={rightTab === "sources"} onClick={() => setRightTab("sources")}>Источники</button>
-            <button role="tab" aria-selected={rightTab === "reference"} onClick={() => setRightTab("reference")}>Эталон</button>
+            <button role="tab" aria-selected={rightTab === "answers"} disabled={answersLocked} onClick={() => setRightTab("answers")}>Ответы</button>
             <button role="tab" aria-selected={rightTab === "notes"} onClick={() => setRightTab("notes")}>Заметки</button>
           </div>
-          <div className={`reference-content ${sourcePulse ? "source-pulse" : ""}`}>
-            {rightTab === "sources" && (
-              sourcesLocked ? (
-                <div className="locked-state"><BookOpen size={24} /><h2>Материалы закрыты</h2><p>Источники откроются после завершения экзаменационного ответа.</p></div>
+          <div className="reference-content">
+            {rightTab === "answers" && (
+              answersLocked ? (
+                <div className="locked-state"><MessageSquare size={24} /><h2>Ответы закрыты</h2><p>Эталон станет доступен после итоговой проверки текущего вопроса.</p></div>
               ) : (
-                <div>
-                  <p className="eyebrow">Связанный фрагмент</p>
-                  <h2>{exam.documents.find((document) => document.id === activeSource?.documentId)?.title}</h2>
-                  <span className="source-page">Страница {activeSource?.page}</span>
-                  {sourceText ? <p className="source-copy">{sourceText}</p> : <LoadingState label="Извлекаем страницу" />}
+                <div className="reference-answer">
+                  <p className="eyebrow">Эталон пакета</p>
+                  <h2>Опорный ответ</h2>
+                  <div className="reference-copy">
+                    {question.referenceAnswer
+                      .split(/\n{2,}|(?<=\.)\s+(?=\d+\.)/u)
+                      .filter(Boolean)
+                      .map((paragraph) => <p key={paragraph}>{paragraph}</p>)}
+                  </div>
                 </div>
-              )
-            )}
-            {rightTab === "reference" && (
-              referenceRevealed ? (
-                <div className="reference-answer"><p className="eyebrow">Эталон пакета</p><h2>Опорный ответ</h2><p>{question.referenceAnswer}</p></div>
-              ) : (
-                <div className="locked-state"><MessageSquare size={24} /><h2>Сначала сформулируйте ответ</h2><p>Эталон скрыт, чтобы не подменять воспроизведение узнаванием.</p><button className="secondary-button" onClick={() => setReferenceRevealed(true)}>Показать эталон</button></div>
               )
             )}
             {rightTab === "notes" && (

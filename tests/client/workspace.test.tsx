@@ -90,22 +90,33 @@ function renderWorkspace(api: ExamApi, route: string) {
 }
 
 describe("Workspace", () => {
-  it("keeps the reference hidden until the learner explicitly reveals it", async () => {
-    const user = userEvent.setup();
+  it("shows the reference immediately in study mode", async () => {
     renderWorkspace(createApi(), "/exams/exam/workspace/q-1?mode=study");
 
     expect(await screen.findByText("What is a transaction?")).toBeInTheDocument();
-    expect(screen.queryByText(question.referenceAnswer)).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: /показать эталон/i }));
     expect(screen.getByText(question.referenceAnswer)).toBeInTheDocument();
   });
 
-  it("locks sources during exam mode", async () => {
+  it("keeps answers unavailable during an active exam", async () => {
     renderWorkspace(createApi(), "/exams/exam/workspace/q-1?mode=exam");
 
     expect(await screen.findByText("What is a transaction?")).toBeInTheDocument();
-    expect(screen.getByText(/источники откроются после завершения/i)).toBeInTheDocument();
-    expect(screen.queryByText("Source fragment")).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /ответы/i })).toBeDisabled();
+    expect(screen.queryByText(question.referenceAnswer)).not.toBeInTheDocument();
+  });
+
+  it("uses two right tabs and keeps the examiner profile in the main area", async () => {
+    renderWorkspace(createApi(), "/exams/exam/workspace/q-1?mode=study");
+    await screen.findByText("What is a transaction?");
+
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
+      "Ответы",
+      "Заметки",
+    ]);
+    expect(screen.queryByRole("tab", { name: /источники/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("main")).toContainElement(
+      screen.getByLabelText(/профиль экзаменатора/i),
+    );
   });
 
   it("persists notes and bookmarks through the repository", async () => {
@@ -148,8 +159,9 @@ describe("Workspace", () => {
     await user.click(screen.getByRole("button", { name: /отправить ответ/i }));
 
     expect(await screen.findByText("Что означает атомарность?")).toBeInTheDocument();
+    expect(screen.getAllByText("Что означает атомарность?")).toHaveLength(1);
     expect(editor).toHaveValue("");
-    expect(screen.getByText("Короткий ответ")).toBeInTheDocument();
+    expect(screen.getAllByText("Короткий ответ")).toHaveLength(1);
   });
 
   it("updates readiness after a final review and offers a fresh attempt", async () => {
