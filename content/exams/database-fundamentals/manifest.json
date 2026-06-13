@@ -1,0 +1,56 @@
+{
+  "id": "database-fundamentals",
+  "version": "1.0.0",
+  "title": "Базы данных: экзамен",
+  "description": "Тренажёр по 48 официальным вопросам экзамена с опорой на учебник и подготовленные ответы.",
+  "subject": "Базы данных и СУБД",
+  "profiles": [
+    {
+      "id": "mentor",
+      "name": "Наставник",
+      "description": "Спокойно помогает увидеть пробелы и сформулировать полный ответ.",
+      "tone": "supportive"
+    },
+    {
+      "id": "examiner",
+      "name": "Экзаменатор",
+      "description": "Проверяет полноту и точность без лишних подсказок.",
+      "tone": "neutral"
+    },
+    {
+      "id": "strict",
+      "name": "Строгая комиссия",
+      "description": "Требует терминологической точности и отмечает каждую существенную ошибку.",
+      "tone": "strict"
+    }
+  ],
+  "documents": [
+    {
+      "id": "official-questions",
+      "title": "Официальный список вопросов",
+      "type": "pdf",
+      "path": "documents/questions.pdf"
+    },
+    {
+      "id": "detailed-answers",
+      "title": "Подробные ответы к экзамену",
+      "type": "pdf",
+      "path": "documents/detailed_answers.pdf"
+    },
+    {
+      "id": "textbook",
+      "title": "Учебник по базам данных",
+      "type": "pdf",
+      "path": "documents/fomins_book.pdf"
+    }
+  ],
+  "thresholds": {
+    "almostReady": 60,
+    "ready": 80
+  },
+  "policy": {
+    "timerMinutes": null,
+    "maxFollowUps": 2,
+    "referenceReveal": "after_attempt_or_explicit"
+  }
+}
