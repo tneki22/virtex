@@ -7,12 +7,25 @@ import type {
   ExamPackage,
   ExamQuestion,
   SessionMessage,
+  StudySession,
 } from "../shared/contracts.js";
+import { calculateExamRunSummary, selectQuestionIds } from "../shared/exam-run.js";
 import { calculateXp, readinessFromScore } from "../shared/progress.js";
-import { aiReviewContentSchema, studyModeSchema } from "../shared/schemas.js";
+import {
+  aiReviewContentSchema,
+  examQuestionCountSchema,
+  studyModeSchema,
+} from "../shared/schemas.js";
 import { normalizeStudyMode } from "../shared/study-mode.js";
 import type { AIProvider } from "./ai.js";
 import { guardInstructionOnlyAnswer } from "./answer-guard.js";
+import {
+  activateNextRunItem,
+  attachSessionToRunItem,
+  completeRunItem,
+  createExamRun,
+  getExamRun,
+} from "./exam-runs.js";
 import {
   buildReviewRequest,
   PROMPT_VERSION,
@@ -140,6 +153,39 @@ export function createApp(options: CreateAppOptions) {
     return message;
   }
 
+  function createSessionRecord(input: {
+    examId: string;
+    questionId: string;
+    mode: StudySession["mode"];
+    profileId: string;
+  }): StudySession {
+    const session: StudySession = {
+      id: randomUUID(),
+      examId: input.examId,
+      questionId: input.questionId,
+      mode: input.mode,
+      profileId: input.profileId,
+      status: "active",
+      followUpCount: 0,
+      createdAt: timestamp(),
+    };
+    database.prepare(`
+      INSERT INTO sessions
+        (id, exam_id, question_id, mode, profile_id, status, follow_up_count, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      session.id,
+      session.examId,
+      session.questionId,
+      session.mode,
+      session.profileId,
+      session.status,
+      session.followUpCount,
+      session.createdAt,
+    );
+    return session;
+  }
+
   function persistReview(
     session: SessionRow,
     review: AIReview,
@@ -195,6 +241,13 @@ export function createApp(options: CreateAppOptions) {
         review.schemaVersion,
         timestamp(),
       );
+    if (completed) {
+      completeRunItem(database, session.id, {
+        ...(review.baseScore === undefined ? {} : { baseScore: review.baseScore }),
+        xp,
+        completedAt: timestamp(),
+      });
+    }
     return xp;
   }
 
@@ -280,6 +333,87 @@ export function createApp(options: CreateAppOptions) {
     });
   });
 
+  app.post("/api/exam-runs", (request, response) => {
+    const body = z.object({
+      examId: z.string().min(1),
+      profileId: z.string().min(1),
+      questionCount: examQuestionCountSchema,
+    }).parse(request.body);
+    const exam = examMap.get(body.examId);
+    if (!exam) return response.status(404).json({ error: "Exam not found" });
+    if (!exam.profiles.some((profile) => profile.id === body.profileId)) {
+      return response.status(400).json({ error: "Profile not found" });
+    }
+
+    const questionIds = selectQuestionIds(
+      exam.questions.map((question) => question.id),
+      body.questionCount,
+      random,
+    );
+    const run = createExamRun(database, {
+      id: randomUUID(),
+      examId: exam.id,
+      profileId: body.profileId,
+      questionIds,
+      createdAt: timestamp(),
+    });
+    const activeItem = run.items.find((item) => item.status === "active")!;
+    const session = createSessionRecord({
+      examId: exam.id,
+      questionId: activeItem.questionId,
+      mode: "exam",
+      profileId: body.profileId,
+    });
+    attachSessionToRunItem(database, run.id, activeItem.position, session.id);
+    response.status(201).json({ run: getExamRun(database, run.id), session });
+  });
+
+  app.get("/api/exam-runs/:id", (request, response) => {
+    const run = getExamRun(database, request.params.id);
+    if (!run) return response.status(404).json({ error: "Exam run not found" });
+    if (run.status === "completed") {
+      const exam = examMap.get(run.examId)!;
+      return response.json({
+        run,
+        summary: calculateExamRunSummary(run.items, exam.thresholds),
+      });
+    }
+    const activeItem = run.items.find((item) => item.status === "active");
+    const session = activeItem?.sessionId
+      ? sessionFromRow(getSession(activeItem.sessionId))
+      : undefined;
+    response.json({ run, ...(session ? { session } : {}) });
+  });
+
+  app.post("/api/exam-runs/:id/next", (request, response) => {
+    let run = getExamRun(database, request.params.id);
+    if (!run) return response.status(404).json({ error: "Exam run not found" });
+    const exam = examMap.get(run.examId);
+    if (!exam) return response.status(409).json({ error: "Exam content is unavailable" });
+    if (run.status === "completed") {
+      return response.json({ run, summary: calculateExamRunSummary(run.items, exam.thresholds) });
+    }
+
+    let activeItem = run.items.find((item) => item.status === "active");
+    if (activeItem?.sessionId) {
+      return response.status(409).json({ error: "Current question is not completed" });
+    }
+    activeItem ??= activateNextRunItem(database, run.id);
+    if (!activeItem) {
+      run = getExamRun(database, run.id)!;
+      return response.json({ run, summary: calculateExamRunSummary(run.items, exam.thresholds) });
+    }
+
+    const session = createSessionRecord({
+      examId: run.examId,
+      questionId: activeItem.questionId,
+      mode: "exam",
+      profileId: run.profileId,
+    });
+    attachSessionToRunItem(database, run.id, activeItem.position, session.id);
+    response.json({ run: getExamRun(database, run.id), session });
+  });
+
   app.post("/api/sessions", (request, response) => {
     const body = z
       .object({
@@ -299,32 +433,12 @@ export function createApp(options: CreateAppOptions) {
       return response.status(400).json({ error: "Profile not found" });
     }
 
-    const session = {
-      id: randomUUID(),
+    const session = createSessionRecord({
       examId: exam.id,
       questionId: question.id,
       mode: body.mode,
       profileId: body.profileId,
-      status: "active" as const,
-      followUpCount: 0,
-      createdAt: timestamp(),
-    };
-    database
-      .prepare(
-        `INSERT INTO sessions
-          (id, exam_id, question_id, mode, profile_id, status, follow_up_count, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        session.id,
-        session.examId,
-        session.questionId,
-        session.mode,
-        session.profileId,
-        session.status,
-        session.followUpCount,
-        session.createdAt,
-      );
+    });
     response.status(201).json(session);
   });
 

@@ -92,6 +92,61 @@ describe("exam API", () => {
     database = createDatabase(":memory:");
   });
 
+  it("runs a sequential multi-question exam", async () => {
+    const multiQuestionExam: ExamPackage = {
+      ...exam,
+      questions: Array.from({ length: 6 }, (_, index) => ({
+        ...exam.questions[0],
+        id: `q-${index + 1}`,
+        officialNumber: index + 1,
+        officialText: `Question ${index + 1}`,
+        displayText: `Question ${index + 1}`,
+      })),
+    };
+    const provider = new SequenceProvider([finalReview, finalReview, finalReview]);
+    const app = createApp({
+      database,
+      exams: [multiQuestionExam],
+      aiProvider: provider,
+      random: () => 0,
+    });
+
+    expect((await request(app).post("/api/exam-runs").send({
+      examId: "exam",
+      profileId: "neutral",
+      questionCount: 4,
+    })).status).toBe(400);
+
+    const created = await request(app).post("/api/exam-runs").send({
+      examId: "exam",
+      profileId: "neutral",
+      questionCount: 3,
+    });
+    expect(created.status).toBe(201);
+    expect(new Set(created.body.run.items.map((item: { questionId: string }) => item.questionId)).size)
+      .toBe(3);
+    expect(created.body.session.mode).toBe("exam");
+    expect((await request(app).post(`/api/exam-runs/${created.body.run.id}/next`)).status)
+      .toBe(409);
+
+    let sessionId = created.body.session.id as string;
+    for (let position = 1; position <= 3; position += 1) {
+      const reviewed = await request(app)
+        .post(`/api/sessions/${sessionId}/review`)
+        .send({ answer: `Complete answer ${position}` });
+      expect(reviewed.status).toBe(200);
+
+      const next = await request(app).post(`/api/exam-runs/${created.body.run.id}/next`);
+      expect(next.status).toBe(200);
+      if (position < 3) {
+        expect(next.body.run.currentPosition).toBe(position + 1);
+        sessionId = next.body.session.id;
+      } else {
+        expect(next.body.summary).toMatchObject({ averageScore: 84, ready: 3 });
+      }
+    }
+  });
+
   it("supports exam discovery, notes, bookmarks, sessions, review, and history", async () => {
     const provider = new SequenceProvider([finalReview]);
     const app = createApp({ database, exams: [exam], aiProvider: provider });

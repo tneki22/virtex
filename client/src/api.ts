@@ -3,6 +3,8 @@ import type {
   Attempt,
   ExamPackage,
   ExamQuestion,
+  ExamQuestionCount,
+  ExamRunStep,
   SessionMessage,
   SourceDocument,
   StudyMode,
@@ -49,6 +51,13 @@ export interface ExamApi {
     mode: StudyMode;
     profileId: string;
   }): Promise<StudySession>;
+  createExamRun(input: {
+    examId: string;
+    profileId: string;
+    questionCount: ExamQuestionCount;
+  }): Promise<ExamRunStep>;
+  getExamRun(runId: string): Promise<ExamRunStep>;
+  advanceExamRun(runId: string): Promise<ExamRunStep>;
   sendMessage(sessionId: string, content: string): Promise<SessionMessage>;
   review(sessionId: string, answer: string): Promise<ReviewResponse>;
   updateNote(questionId: string, note: string): Promise<{ questionId: string; note: string }>;
@@ -94,6 +103,24 @@ export class HttpExamApi implements ExamApi {
     return jsonRequest<StudySession>("/api/sessions", {
       method: "POST",
       body: JSON.stringify(input),
+    });
+  }
+
+  createExamRun(input: Parameters<ExamApi["createExamRun"]>[0]) {
+    return jsonRequest<ExamRunStep>("/api/exam-runs", {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  }
+
+  getExamRun(runId: string) {
+    return jsonRequest<ExamRunStep>(`/api/exam-runs/${runId}`);
+  }
+
+  advanceExamRun(runId: string) {
+    return jsonRequest<ExamRunStep>(`/api/exam-runs/${runId}/next`, {
+      method: "POST",
+      body: "{}",
     });
   }
 
@@ -246,6 +273,18 @@ export class MockExamApi implements ExamApi {
       followUpCount: 0,
       createdAt: new Date().toISOString(),
     };
+  }
+
+  async createExamRun(_input: Parameters<ExamApi["createExamRun"]>[0]): Promise<ExamRunStep> {
+    throw new Error("Mock exam runs are not initialized");
+  }
+
+  async getExamRun(_runId: string): Promise<ExamRunStep> {
+    throw new Error("Mock exam runs are not initialized");
+  }
+
+  async advanceExamRun(_runId: string): Promise<ExamRunStep> {
+    throw new Error("Mock exam runs are not initialized");
   }
 
   async sendMessage(sessionId: string, content: string) {
