@@ -22,17 +22,54 @@ describe("database fundamentals package", () => {
     expect(exam.questions.every((question) => question.sources.length > 0)).toBe(true);
   });
 
-  it("marks the audited duplicate, compound, typo, and manual-answer cases", async () => {
+  it("uses detailed answers as the authoritative source for every question", async () => {
     const exam = await compileExamPackage(packageRoot);
     const byNumber = new Map(
       exam.questions.map((question) => [question.officialNumber, question]),
     );
 
-    expect(byNumber.get(19)?.flags).toContain("manual-reference");
-    expect(byNumber.get(28)?.flags).toContain("manual-reference");
-    expect(byNumber.get(36)?.flags).toContain("manual-reference");
-    expect(byNumber.get(40)?.flags).toContain("manual-reference");
-    expect(byNumber.get(45)?.flags).toContain("manual-reference");
+    expect(byNumber.get(19)?.sources[0]).toMatchObject({
+      documentId: "detailed-answers",
+      page: 5,
+    });
+    expect(byNumber.get(28)?.sources[0]).toMatchObject({
+      documentId: "detailed-answers",
+      page: 23,
+    });
+    expect(byNumber.get(36)?.sources[0]).toMatchObject({
+      documentId: "detailed-answers",
+      page: 14,
+    });
+    expect(byNumber.get(40)?.sources[0]).toMatchObject({
+      documentId: "detailed-answers",
+      page: 25,
+    });
+    expect(byNumber.get(45)?.sources[0]).toMatchObject({
+      documentId: "detailed-answers",
+      page: 30,
+    });
+
+    for (const question of exam.questions) {
+      expect(question.sources[0]?.documentId).toBe("detailed-answers");
+    }
+
+    const unsupported =
+      /WAL Buffer|synchronous_commit|TRUNCATE|Schema-on-Write|Schema-on-Read/u;
+    for (const number of [19, 28, 36, 40, 45]) {
+      expect(byNumber.get(number)?.referenceAnswer).not.toMatch(unsupported);
+      expect(byNumber.get(number)?.flags).toContain("reference-alias");
+    }
+  });
+
+  it("marks the audited duplicate, compound, and typo cases", async () => {
+    const exam = await compileExamPackage(packageRoot);
+    const byNumber = new Map(
+      exam.questions.map((question) => [question.officialNumber, question]),
+    );
+
+    expect(byNumber.get(19)?.flags).toContain("duplicate-official-wording");
+    expect(byNumber.get(36)?.flags).toContain("duplicate-official-wording");
+    expect(byNumber.get(45)?.flags).toContain("duplicate-official-wording");
     expect(byNumber.get(25)?.flags).toContain("compound-official-wording");
     expect(byNumber.get(35)?.flags).toContain("corrected-display-wording");
   });
