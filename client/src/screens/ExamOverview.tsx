@@ -1,88 +1,83 @@
-import { ArrowLeft, ArrowRight, BookOpenText, GraduationCap, MessageSquareText } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { ArrowRight, BookOpenText, GraduationCap } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import type { ExamApi, ExamDetail } from "../api.js";
 import { api as defaultApi } from "../api.js";
 import { AppShell, ErrorState, LoadingState } from "../components/AppShell.js";
 
-const modes = [
-  {
-    id: "study",
-    title: "Изучение",
-    description: "Источник, черновик и эталон в одном рабочем пространстве.",
-    icon: BookOpenText,
-  },
-  {
-    id: "practice",
-    title: "Практика",
-    description: "Ответьте без подсказки и получите уточнения экзаменатора.",
-    icon: MessageSquareText,
-  },
-  {
-    id: "exam",
-    title: "Экзамен",
-    description: "Один случайный вопрос. Источники закрыты до итогового ответа.",
-    icon: GraduationCap,
-  },
-] as const;
+type ExamQuestionCount = 1 | 2 | 3 | 5;
+
+const allowedCounts: ExamQuestionCount[] = [1, 2, 3, 5];
 
 export function ExamOverview({ api = defaultApi }: { api?: ExamApi }) {
   const { examId = "" } = useParams();
+  const navigate = useNavigate();
   const [exam, setExam] = useState<ExamDetail | null>(null);
+  const [questionCount, setQuestionCount] = useState<ExamQuestionCount>(1);
   const [error, setError] = useState("");
 
   useEffect(() => {
     void api.getExam(examId).then(setExam).catch((reason: Error) => setError(reason.message));
   }, [api, examId]);
 
-  const groups = useMemo(() => {
-    if (!exam) return [];
-    return Array.from(new Map(exam.questions.map((question) => [question.groupId, question.groupTitle])).values());
-  }, [exam]);
-
   return (
     <AppShell>
       <main className="page overview-page">
-        <Link to="/" className="back-link"><ArrowLeft size={16} /> Все экзамены</Link>
         {error && <ErrorState message={error} />}
         {!exam && !error && <LoadingState />}
         {exam && (
-          <>
-            <section className="overview-hero">
-              <div>
-                <p className="eyebrow">{exam.subject} · пакет {exam.version}</p>
-                <h1>{exam.title}</h1>
-                <p className="lead">{exam.description}</p>
-              </div>
-              <dl className="overview-facts">
-                <div><dt>Вопросы</dt><dd>{exam.questions.length}</dd></div>
-                <div><dt>Разделы</dt><dd>{groups.length}</dd></div>
-                <div><dt>Источники</dt><dd>{exam.documents.length}</dd></div>
-              </dl>
-            </section>
+          <section className="mode-section compact-mode-section" aria-labelledby="mode-heading">
+            <div className="section-heading compact-heading">
+              <p className="eyebrow">{exam.title}</p>
+              <h1 id="mode-heading">Выберите режим</h1>
+            </div>
 
-            <section className="mode-section">
-              <div className="section-heading">
-                <p className="eyebrow">Выберите сценарий</p>
-                <h2>Как будете работать сегодня?</h2>
-              </div>
-              <div className="mode-grid">
-                {modes.map(({ id, title, description, icon: Icon }) => {
-                  const firstQuestion = exam.questions[0]?.id ?? "random";
-                  const questionId = id === "exam" ? "random" : firstQuestion;
-                  return (
-                    <Link to={`/exams/${exam.id}/workspace/${questionId}?mode=${id}`} className="mode-card" key={id}>
-                      <Icon size={24} />
-                      <span className="mode-number">0{modes.findIndex((mode) => mode.id === id) + 1}</span>
-                      <h3>{title}</h3>
-                      <p>{description}</p>
-                      <span className="mode-action">Начать <ArrowRight size={16} /></span>
-                    </Link>
-                  );
-                })}
-              </div>
-            </section>
-          </>
+            <div className="mode-grid mode-grid-two">
+              <Link
+                to={`/exams/${exam.id}/workspace/${exam.questions[0]?.id ?? "random"}?mode=study`}
+                className="mode-card"
+              >
+                <BookOpenText size={25} />
+                <span className="mode-number">01</span>
+                <h2>Изучение</h2>
+                <p>Выбирайте вопросы, сверяйтесь с ответами и сохраняйте заметки.</p>
+                <span className="mode-action">Открыть изучение <ArrowRight size={16} /></span>
+              </Link>
+
+              <article className="mode-card exam-mode-card">
+                <GraduationCap size={25} />
+                <span className="mode-number">02</span>
+                <h2>Экзамен</h2>
+                <p>Ответьте на случайные вопросы без доступа к эталону до проверки.</p>
+                <fieldset className="question-count-picker">
+                  <legend>Количество вопросов</legend>
+                  <div>
+                    {allowedCounts.map((count) => (
+                      <label key={count}>
+                        <input
+                          type="radio"
+                          name="question-count"
+                          value={count}
+                          checked={questionCount === count}
+                          onChange={() => setQuestionCount(count)}
+                        />
+                        <span>{count}</span>
+                      </label>
+                    ))}
+                  </div>
+                </fieldset>
+                <button
+                  type="button"
+                  className="mode-action mode-button"
+                  onClick={() => navigate(
+                    `/exams/${exam.id}/workspace/random?mode=exam&count=${questionCount}`,
+                  )}
+                >
+                  Открыть экзамен <ArrowRight size={16} />
+                </button>
+              </article>
+            </div>
+          </section>
         )}
       </main>
     </AppShell>

@@ -110,6 +110,23 @@ h1, h2 { font-family: "Newsreader Variable", Georgia, serif; font-weight: 560; l
 .mode-card h3 { margin: auto 0 12px; font-family: "Newsreader Variable", serif; font-size: 31px; }
 .mode-card p { color: var(--muted); line-height: 1.6; font-size: 13px; }
 .mode-action { margin-top: 20px; display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 750; }
+.compact-mode-section { max-width: 940px; margin: 0 auto; padding-top: 42px; }
+.compact-heading { margin-bottom: 28px; }
+.compact-heading h1 { font-size: clamp(38px, 5vw, 58px); }
+.mode-grid-two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.mode-grid-two .mode-card { min-height: 390px; }
+.mode-grid-two .mode-card h2 { margin: auto 0 12px; font-family: "Newsreader Variable", serif; font-size: 31px; }
+.exam-mode-card { cursor: default; }
+.exam-mode-card:hover { transform: none; }
+.question-count-picker { margin: 22px 0 0; padding: 0; border: 0; }
+.question-count-picker legend { margin-bottom: 9px; color: var(--muted); font-size: 10px; font-weight: 750; text-transform: uppercase; letter-spacing: .08em; }
+.question-count-picker > div { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; }
+.question-count-picker label { position: relative; cursor: pointer; }
+.question-count-picker input { position: absolute; opacity: 0; pointer-events: none; }
+.question-count-picker span { min-height: 38px; display: grid; place-items: center; border: 1px solid var(--line); background: var(--paper); font-size: 12px; font-weight: 750; transition: border-color var(--ease), background var(--ease), color var(--ease); }
+.question-count-picker input:checked + span { border-color: var(--accent); background: var(--accent); color: white; }
+.question-count-picker input:focus-visible + span { outline: 3px solid rgba(138, 48, 47, .22); outline-offset: 2px; }
+.mode-button { width: 100%; justify-content: space-between; border: 0; border-top: 1px solid var(--line); padding: 15px 0 0; background: transparent; color: var(--ink); cursor: pointer; }
 
 .workspace-page { height: 100vh; overflow: hidden; background: var(--paper); }
 .workspace-header { height: 58px; display: grid; grid-template-columns: 280px 1fr auto; align-items: center; padding: 0 18px; border-bottom: 1px solid var(--line); background: var(--paper-strong); z-index: 50; position: relative; }

@@ -6,7 +6,7 @@ export function AppShell({ children }: PropsWithChildren) {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <NavLink to="/" className="brand" aria-label="Virtex — список экзаменов">
+        <NavLink to="/" className="brand" aria-label="Virtex — подготовка">
           <span className="brand-mark">V</span>
           <span>
             <strong>Virtex</strong>
@@ -15,7 +15,7 @@ export function AppShell({ children }: PropsWithChildren) {
         </NavLink>
         <nav className="primary-nav" aria-label="Основная навигация">
           <NavLink to="/" end>
-            <Library size={17} /> Экзамены
+            <Library size={17} /> Подготовка
           </NavLink>
           <NavLink to="/history">
             <Clock3 size={17} /> История
