@@ -131,3 +131,43 @@ export interface QuestionProgress {
   attempts: number;
   readiness: ReadinessStatus;
 }
+
+export type ExamQuestionCount = 1 | 2 | 3 | 5;
+
+export interface ExamRunItem {
+  id: string;
+  questionId: string;
+  position: number;
+  status: "pending" | "active" | "completed";
+  sessionId?: string;
+  baseScore?: number;
+  xp: number;
+}
+
+export interface ExamRun {
+  id: string;
+  examId: string;
+  profileId: string;
+  questionCount: ExamQuestionCount;
+  currentPosition: number;
+  status: "active" | "completed";
+  items: ExamRunItem[];
+  createdAt: string;
+  completedAt?: string;
+}
+
+export interface ExamRunSummary {
+  averageScore?: number;
+  ready: number;
+  almostReady: number;
+  review: number;
+  unscored: number;
+  totalXp: number;
+  results: ExamRunItem[];
+}
+
+export interface ExamRunStep {
+  run: ExamRun;
+  session?: StudySession;
+  summary?: ExamRunSummary;
+}

@@ -1,6 +1,12 @@
 import { z } from "zod";
 
 export const studyModeSchema = z.enum(["study", "exam"]);
+export const examQuestionCountSchema = z.union([
+  z.literal(1),
+  z.literal(2),
+  z.literal(3),
+  z.literal(5),
+]);
 
 export const sourceReferenceSchema = z.object({
   documentId: z.string().min(1),
