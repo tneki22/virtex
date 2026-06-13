@@ -8,6 +8,16 @@ const packageRoot = path.resolve(
 );
 
 describe("database fundamentals package", () => {
+  it("provides at least four unique quick prompts for every examiner profile", async () => {
+    const exam = await compileExamPackage(packageRoot);
+
+    for (const profile of exam.profiles) {
+      expect(profile.quickPrompts).toHaveLength(4);
+      expect(new Set(profile.quickPrompts?.map((prompt) => prompt.id))).toHaveLength(4);
+      expect(profile.quickPrompts?.every((prompt) => prompt.prompt.trim().length > 0)).toBe(true);
+    }
+  });
+
   it("contains 48 independent, sourced questions with reference answers", async () => {
     const exam = await compileExamPackage(packageRoot);
     const ids = exam.questions.map((question) => question.id);

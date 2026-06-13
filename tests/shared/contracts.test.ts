@@ -4,7 +4,7 @@ import {
   readinessFromScore,
   sourceRefKey,
 } from "../../shared/progress.js";
-import { examPackageSchema } from "../../shared/schemas.js";
+import { examPackageSchema, sessionKindSchema } from "../../shared/schemas.js";
 import { normalizeStudyMode } from "../../shared/study-mode.js";
 
 describe("normalizeStudyMode", () => {
@@ -48,6 +48,41 @@ describe("sourceRefKey", () => {
 });
 
 describe("examPackageSchema", () => {
+  it("accepts profile-specific quick prompts", () => {
+    expect(sessionKindSchema.parse("tutor")).toBe("tutor");
+    const result = examPackageSchema.safeParse({
+      id: "sample",
+      version: "1.0.0",
+      title: "Sample exam",
+      description: "Fixture",
+      subject: "Databases",
+      profiles: [{
+        id: "mentor",
+        name: "Mentor",
+        description: "Explains",
+        tone: "supportive",
+        quickPrompts: [{ id: "pizza", label: "Pizza", prompt: "Explain with pizza" }],
+      }],
+      documents: [{ id: "book", title: "Book", type: "text", path: "book.txt" }],
+      questions: [{
+        id: "q-1",
+        officialNumber: 1,
+        officialText: "Question",
+        displayText: "Question",
+        groupId: "core",
+        groupTitle: "Core",
+        referenceAnswer: "Answer",
+        emphasis: [],
+        sources: [{ documentId: "book", page: 1 }],
+      }],
+      thresholds: { almostReady: 60, ready: 80 },
+      policy: { maxFollowUps: 2, timerMinutes: null, referenceReveal: "after_attempt_or_explicit" },
+      styleGuide: "Write clearly.",
+    });
+
+    expect(result.success).toBe(true);
+  });
+
   it("rejects a question without a reference answer or source", () => {
     const result = examPackageSchema.safeParse({
       id: "sample",

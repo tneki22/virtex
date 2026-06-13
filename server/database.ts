@@ -29,10 +29,13 @@ export function createDatabase(filePath: string): Database.Database {
       exam_id TEXT NOT NULL,
       question_id TEXT NOT NULL,
       mode TEXT NOT NULL,
+      kind TEXT NOT NULL DEFAULT 'review' CHECK (kind IN ('tutor', 'review', 'exam')),
+      title TEXT NOT NULL DEFAULT 'Проверка ответа',
       profile_id TEXT NOT NULL,
       status TEXT NOT NULL,
       follow_up_count INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT '',
       completed_at TEXT
     );
 
@@ -107,6 +110,23 @@ export function createDatabase(filePath: string): Database.Database {
   if (!sessionColumnNames.has("exam_run_position")) {
     database.exec("ALTER TABLE sessions ADD COLUMN exam_run_position INTEGER");
   }
+  if (!sessionColumnNames.has("kind")) {
+    database.exec("ALTER TABLE sessions ADD COLUMN kind TEXT NOT NULL DEFAULT 'review'");
+  }
+  if (!sessionColumnNames.has("title")) {
+    database.exec("ALTER TABLE sessions ADD COLUMN title TEXT NOT NULL DEFAULT 'Проверка ответа'");
+  }
+  if (!sessionColumnNames.has("updated_at")) {
+    database.exec("ALTER TABLE sessions ADD COLUMN updated_at TEXT");
+  }
+  database.exec(`
+    UPDATE sessions
+    SET kind = CASE WHEN mode = 'exam' THEN 'exam' ELSE COALESCE(NULLIF(kind, ''), 'review') END,
+        title = CASE WHEN mode = 'exam' THEN 'Экзамен' ELSE COALESCE(NULLIF(title, ''), 'Проверка ответа') END,
+        updated_at = COALESCE(NULLIF(updated_at, ''), completed_at, created_at)
+  `);
+
+  database.exec("CREATE INDEX IF NOT EXISTS idx_sessions_question_updated ON sessions(exam_id, question_id, updated_at DESC)");
 
   return database;
 }

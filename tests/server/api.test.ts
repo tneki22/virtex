@@ -69,6 +69,10 @@ class SequenceProvider implements AIProvider {
     return this.responses.shift();
   }
 
+  async chat() {
+    return "Tutor response";
+  }
+
   async testConnection() {
     return { ok: true, model: this.model };
   }
@@ -90,6 +94,65 @@ describe("exam API", () => {
 
   beforeEach(() => {
     database = createDatabase(":memory:");
+  });
+
+  it("creates, lists, restores, and continues tutor chats without extra reads from AI", async () => {
+    const provider = new SequenceProvider([]);
+    const chatSpy = vi.spyOn(provider, "chat");
+    const app = createApp({ database, exams: [exam], aiProvider: provider });
+    const created = await request(app)
+      .post("/api/exams/exam/questions/q-1/chats")
+      .send({ kind: "tutor", profileId: "neutral" });
+    expect(created.status).toBe(201);
+    expect(created.body).toMatchObject({ kind: "tutor", title: "Разбор темы", messages: [] });
+
+    const turn = await request(app)
+      .post(`/api/chats/${created.body.id}/messages`)
+      .send({ content: "Explain with pizza delivery" });
+    expect(turn.status).toBe(201);
+    expect(turn.body.user.content).toBe("Explain with pizza delivery");
+    expect(turn.body.assistant.content).toBe("Tutor response");
+    expect(chatSpy).toHaveBeenCalledTimes(1);
+
+    const history = await request(app).get("/api/exams/exam/questions/q-1/chats");
+    expect(history.body[0].title).toBe("Explain with pizza delivery");
+    const restored = await request(app).get(`/api/chats/${created.body.id}`);
+    expect(restored.body.messages).toHaveLength(2);
+    expect(chatSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a failed tutor turn out of persisted history", async () => {
+    const provider = new SequenceProvider([]);
+    vi.spyOn(provider, "chat").mockRejectedValue(new Error("provider failed"));
+    const app = createApp({ database, exams: [exam], aiProvider: provider });
+    const created = await request(app)
+      .post("/api/exams/exam/questions/q-1/chats")
+      .send({ kind: "tutor", profileId: "neutral" });
+
+    expect((await request(app)
+      .post(`/api/chats/${created.body.id}/messages`)
+      .send({ content: "Do not persist me" })).status).toBe(502);
+    expect((await request(app).get(`/api/chats/${created.body.id}`)).body.messages).toEqual([]);
+  });
+
+  it("restores a completed review chat and rejects further review", async () => {
+    const provider = new SequenceProvider([finalReview]);
+    const app = createApp({ database, exams: [exam], aiProvider: provider });
+    const created = await request(app)
+      .post("/api/exams/exam/questions/q-1/chats")
+      .send({ kind: "review", profileId: "neutral" });
+    const reviewed = await request(app)
+      .post(`/api/chats/${created.body.id}/review`)
+      .send({ answer: "A transaction is atomic." });
+    expect(reviewed.status).toBe(200);
+    expect(reviewed.body.baseScore).toBe(84);
+
+    const restored = await request(app).get(`/api/chats/${created.body.id}`);
+    expect(restored.body.status).toBe("completed");
+    expect(restored.body.reviews.at(-1).baseScore).toBe(84);
+    expect((await request(app)
+      .post(`/api/chats/${created.body.id}/review`)
+      .send({ answer: "Try again" })).status).toBe(409);
   });
 
   it("transcribes audio without exposing the reference answer", async () => {
@@ -396,16 +459,19 @@ describe("exam API", () => {
     expect(provider.calls).toHaveLength(1);
   });
 
-  it("keeps drafts available without AI but omits a numeric score", async () => {
+  it("keeps the session untouched when AI is unavailable", async () => {
     const app = createApp({ database, exams: [exam], aiProvider: null });
     const sessionId = await createSession(app);
     const response = await request(app)
       .post(`/api/sessions/${sessionId}/review`)
       .send({ answer: "Offline draft" });
 
-    expect(response.status).toBe(200);
-    expect(response.body.action).toBe("unavailable");
-    expect(response.body.baseScore).toBeUndefined();
-    expect(response.body.xp).toBe(10);
+    expect(response.status).toBe(503);
+    const messages = database.prepare("SELECT COUNT(*) AS count FROM messages WHERE session_id = ?")
+      .get(sessionId) as { count: number };
+    const session = database.prepare("SELECT status FROM sessions WHERE id = ?")
+      .get(sessionId) as { status: string };
+    expect(messages.count).toBe(0);
+    expect(session.status).toBe("active");
   });
 });

@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { ExamPackage } from "../../shared/contracts.js";
 import {
   buildReviewRequest,
+  buildTutorRequest,
   MAX_ESTIMATED_INPUT_TOKENS,
+  MAX_TUTOR_ESTIMATED_INPUT_TOKENS,
 } from "../../server/prompt.js";
 
 const exam: ExamPackage = {
@@ -143,5 +145,59 @@ describe("buildReviewRequest", () => {
     });
 
     expect(request.estimatedInputTokens).toBeLessThanOrEqual(MAX_ESTIMATED_INPUT_TOKENS);
+  });
+});
+
+describe("buildTutorRequest", () => {
+  it("does not add truncation markers after the source budget is exhausted", () => {
+    const sources = Array.from({ length: 3 }, (_, index) => ({
+      documentId: "book",
+      page: index + 1,
+      fragmentId: `large-${index}`,
+    }));
+    const request = buildTutorRequest({
+      exam: {
+        ...exam,
+        documents: [{
+          ...exam.documents[0],
+          pageCount: 3,
+          fragments: sources.map((source) => ({
+            id: source.fragmentId,
+            page: source.page,
+            text: "x".repeat(10_000),
+          })),
+        }],
+      },
+      question: { ...exam.questions[0], sources },
+      profile: exam.profiles[0],
+      message: "Explain",
+      dialogue: [],
+    });
+
+    expect(JSON.stringify(request.messages).match(/сокращено/g)).toHaveLength(1);
+  });
+
+  it("uses a bounded tail of dialogue and allows general-knowledge analogies", () => {
+    const dialogue = Array.from({ length: 20 }, (_, index) => ({
+      id: `m${index}`,
+      sessionId: "s1",
+      role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
+      content: `old-${index}-${"x".repeat(700)}`,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    }));
+    const request = buildTutorRequest({
+      exam,
+      question: exam.questions[0],
+      profile: exam.profiles[0],
+      message: "Explain with pizza delivery",
+      dialogue,
+    });
+    const serialized = JSON.stringify(request.messages);
+
+    expect(serialized).toContain("may use general knowledge");
+    expect(serialized).toContain("Explain with pizza delivery");
+    expect(serialized).toContain("old-19");
+    expect(serialized).not.toContain("old-0");
+    expect(request.estimatedInputTokens).toBeLessThanOrEqual(MAX_TUTOR_ESTIMATED_INPUT_TOKENS);
   });
 });

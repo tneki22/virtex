@@ -12,7 +12,13 @@ const exam = {
   description: "Fixture",
   subject: "Databases",
   profiles: [
-    { id: "neutral", name: "Neutral", description: "Neutral", tone: "neutral" as const },
+    {
+      id: "neutral",
+      name: "Neutral",
+      description: "Neutral",
+      tone: "neutral" as const,
+      quickPrompts: [{ id: "pizza", label: "Pizza example", prompt: "Explain with pizza" }],
+    },
   ],
   documents: [
     { id: "book", title: "Book", type: "text" as const, path: "book.txt", pageCount: 1 },
@@ -60,14 +66,22 @@ function createApi(): ExamApi {
       examId: "exam",
       questionId: "q-1",
       mode: "study",
+      kind: "review",
+      title: "Проверка ответа",
       profileId: "neutral",
       status: "active",
       followUpCount: 0,
       createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
     }),
     createExamRun: vi.fn(),
     getExamRun: vi.fn(),
     advanceExamRun: vi.fn(),
+    listChats: vi.fn().mockResolvedValue([]),
+    createChat: vi.fn(),
+    getChat: vi.fn(),
+    sendTutorMessage: vi.fn(),
+    reviewChat: vi.fn(),
     transcribe: vi.fn(),
     sendMessage: vi.fn(),
     review: vi.fn(),
@@ -95,7 +109,91 @@ function renderWorkspace(api: ExamApi, route: string) {
 }
 
 describe("Workspace", () => {
-  it("keeps the run profile when exam metadata resolves later", async () => {
+  it("restores the latest completed review without another AI request", async () => {
+    const api = createApi();
+    const review = {
+      action: "final" as const,
+      examinerMessage: "Ответ принят.",
+      baseScore: 84,
+      personaVerdict: "Готов",
+      strengths: ["Точно"],
+      gaps: [],
+      errors: [],
+      citations: [],
+      advice: "Повторить вслух",
+      packageVersion: "1.0.0",
+      promptVersion: "v1",
+      schemaVersion: "v1",
+    };
+    vi.mocked(api.listChats).mockResolvedValue([{
+      id: "chat-1", examId: "exam", questionId: "q-1", mode: "study", kind: "review",
+      title: "Мой ответ", profileId: "neutral", status: "completed", followUpCount: 0,
+      createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T01:00:00.000Z",
+      completedAt: "2026-01-01T01:00:00.000Z", messageCount: 2, latestReview: review,
+    }]);
+    vi.mocked(api.getChat).mockResolvedValue({
+      id: "chat-1", examId: "exam", questionId: "q-1", mode: "study", kind: "review",
+      title: "Мой ответ", profileId: "neutral", status: "completed", followUpCount: 0,
+      createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T01:00:00.000Z",
+      completedAt: "2026-01-01T01:00:00.000Z",
+      messages: [
+        { id: "m1", sessionId: "chat-1", role: "user", content: "Мой полный ответ", createdAt: "2026-01-01T00:00:00.000Z" },
+        { id: "m2", sessionId: "chat-1", role: "assistant", content: "Ответ принят.", createdAt: "2026-01-01T01:00:00.000Z" },
+      ],
+      reviews: [review],
+    });
+
+    renderWorkspace(api, "/exams/exam/workspace/q-1?mode=study");
+
+    expect(await screen.findByText("Мой полный ответ")).toBeInTheDocument();
+    expect(screen.getByText("84")).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: /сообщение/i })).toBeDisabled();
+    expect(api.reviewChat).not.toHaveBeenCalled();
+  });
+
+  it("creates a tutor chat and quick prompts only fill the editor", async () => {
+    const user = userEvent.setup();
+    const api = createApi();
+    vi.mocked(api.createChat).mockResolvedValue({
+      id: "chat-1", examId: "exam", questionId: "q-1", mode: "study", kind: "tutor",
+      title: "Разбор темы", profileId: "neutral", status: "active", followUpCount: 0,
+      createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
+      messages: [], reviews: [],
+    });
+    renderWorkspace(api, "/exams/exam/workspace/q-1?mode=study");
+
+    await user.click(await screen.findByRole("button", { name: /новый чат/i }));
+    await user.click(screen.getByRole("button", { name: /разобрать тему/i }));
+    await user.click(screen.getByRole("button", { name: /создать чат/i }));
+    await user.click(await screen.findByRole("button", { name: /pizza example/i }));
+
+    expect(screen.getByRole("textbox", { name: /сообщение/i })).toHaveValue("Explain with pizza");
+    expect(api.sendTutorMessage).not.toHaveBeenCalled();
+  });
+
+  it("uses a two-panel exam workspace without profile or readiness labels", async () => {
+    const api = createApi();
+    vi.mocked(api.getExamRun).mockResolvedValue({
+      run: {
+        id: "run-1", examId: "exam", profileId: "neutral", questionCount: 1,
+        currentPosition: 1, status: "active", createdAt: "2026-01-01T00:00:00.000Z",
+        items: [{ id: "i1", questionId: "q-1", position: 1, status: "active", sessionId: "session", xp: 0 }],
+      },
+      session: {
+        id: "session", examId: "exam", questionId: "q-1", mode: "exam", kind: "exam",
+        title: "Экзамен", profileId: "neutral", status: "active", followUpCount: 0,
+        createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
+      },
+    });
+    renderWorkspace(api, "/exams/exam/workspace/q-1?mode=exam&run=run-1");
+
+    expect(await screen.findByText(/вопрос 1 из 1/i)).toBeInTheDocument();
+    expect(screen.queryByRole("complementary", { name: /навигация по вопросам/i })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/профиль экзаменатора/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/не начат/i)).not.toBeInTheDocument();
+  });
+
+  it("does not render a profile picker after an exam run is restored", async () => {
     let resolveExam!: (value: ExamDetail) => void;
     const api = createApi();
     const examWithProfiles = {
@@ -126,17 +224,21 @@ describe("Workspace", () => {
         examId: "exam",
         questionId: "q-1",
         mode: "exam",
+        kind: "exam",
+        title: "Экзамен",
         profileId: "strict",
         status: "active",
         followUpCount: 0,
         createdAt: "2026-06-13T00:00:00.000Z",
+        updatedAt: "2026-06-13T00:00:00.000Z",
       },
     });
 
     renderWorkspace(api, "/exams/exam/workspace/q-1?mode=exam&run=run-1");
     resolveExam(examWithProfiles);
 
-    expect(await screen.findByLabelText(/профиль экзаменатора/i)).toHaveValue("strict");
+    await screen.findByText(/вопрос 1 из 1/i);
+    expect(screen.queryByLabelText(/профиль экзаменатора/i)).not.toBeInTheDocument();
   });
 
   it("creates a three-question run only after the user starts the exam", async () => {
@@ -162,10 +264,13 @@ describe("Workspace", () => {
         examId: "exam",
         questionId: "q-1",
         mode: "exam",
+        kind: "exam",
+        title: "Экзамен",
         profileId: "neutral",
         status: "active",
         followUpCount: 0,
         createdAt: "2026-06-13T00:00:00.000Z",
+        updatedAt: "2026-06-13T00:00:00.000Z",
       },
     });
     renderWorkspace(api, "/exams/exam/workspace/random?mode=exam&count=3");
@@ -202,10 +307,13 @@ describe("Workspace", () => {
         examId: "exam",
         questionId: "q-1",
         mode: "exam",
+        kind: "exam",
+        title: "Экзамен",
         profileId: "neutral",
         status: "active",
         followUpCount: 0,
         createdAt: "2026-06-13T00:00:00.000Z",
+        updatedAt: "2026-06-13T00:00:00.000Z",
       },
     });
     vi.mocked(api.review).mockResolvedValue({
@@ -243,7 +351,7 @@ describe("Workspace", () => {
 
     const editor = await screen.findByRole("textbox", { name: /ответ на вопрос/i });
     await user.type(editor, "Финальный полный ответ");
-    await user.click(screen.getByRole("button", { name: /отправить ответ/i }));
+    await user.click(screen.getByRole("button", { name: /проверить ответ/i }));
     await user.click(await screen.findByRole("button", { name: /завершить экзамен/i }));
 
     expect(await screen.findByText("65/100")).toBeInTheDocument();
@@ -266,7 +374,7 @@ describe("Workspace", () => {
     expect(screen.queryByText(question.referenceAnswer)).not.toBeInTheDocument();
   });
 
-  it("uses two right tabs and keeps the examiner profile in the main area", async () => {
+  it("uses two right tabs and removes the unclear package label", async () => {
     renderWorkspace(createApi(), "/exams/exam/workspace/q-1?mode=study");
     await screen.findByText("What is a transaction?");
 
@@ -275,10 +383,8 @@ describe("Workspace", () => {
       "Заметки",
     ]);
     expect(screen.queryByRole("tab", { name: /источники/i })).not.toBeInTheDocument();
-    expect(screen.getByRole("main")).toContainElement(
-      screen.getByLabelText(/профиль экзаменатора/i),
-    );
-    expect(screen.getByRole("button", { name: /диктовать/i })).toBeInTheDocument();
+    expect(screen.queryByText(/эталон пакета/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /новый чат/i })).toBeInTheDocument();
   });
 
   it("persists notes and bookmarks through the repository", async () => {
@@ -318,7 +424,7 @@ describe("Workspace", () => {
     const editor = await screen.findByRole("textbox", { name: /ответ на вопрос/i });
 
     await user.type(editor, "Короткий ответ");
-    await user.click(screen.getByRole("button", { name: /отправить ответ/i }));
+    await user.click(screen.getByRole("button", { name: /проверить ответ/i }));
 
     expect(await screen.findByText("Что означает атомарность?")).toBeInTheDocument();
     expect(screen.getAllByText("Что означает атомарность?")).toHaveLength(1);
@@ -326,7 +432,7 @@ describe("Workspace", () => {
     expect(screen.getAllByText("Короткий ответ")).toHaveLength(1);
   });
 
-  it("updates readiness after a final review and offers a fresh attempt", async () => {
+  it("hides readiness status after a final review and offers a fresh attempt", async () => {
     const user = userEvent.setup();
     const api = createApi();
     vi.mocked(api.review).mockResolvedValue({
@@ -349,10 +455,10 @@ describe("Workspace", () => {
     const editor = await screen.findByRole("textbox", { name: /ответ на вопрос/i });
 
     await user.type(editor, "Полный ответ о транзакции");
-    await user.click(screen.getByRole("button", { name: /отправить ответ/i }));
+    await user.click(screen.getByRole("button", { name: /проверить ответ/i }));
 
-    expect(await screen.findByText("84/100")).toBeInTheDocument();
-    expect(screen.getByText("1 попыток")).toBeInTheDocument();
+    expect(await screen.findByText("84")).toBeInTheDocument();
+    expect(screen.queryByText(/попыток/i)).not.toBeInTheDocument();
     expect(editor).toBeDisabled();
     await user.click(screen.getByRole("button", { name: /новая попытка/i }));
     expect(editor).toBeEnabled();

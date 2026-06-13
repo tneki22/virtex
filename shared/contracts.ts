@@ -1,4 +1,11 @@
 export type StudyMode = "study" | "exam";
+export type SessionKind = "tutor" | "review" | "exam";
+
+export interface QuickPrompt {
+  id: string;
+  label: string;
+  prompt: string;
+}
 
 export type ReadinessStatus =
   | "not_started"
@@ -36,6 +43,7 @@ export interface ExaminerProfile {
   name: string;
   description: string;
   tone: "supportive" | "neutral" | "strict";
+  quickPrompts?: QuickPrompt[];
 }
 
 export interface ExamQuestion {
@@ -81,11 +89,32 @@ export interface StudySession {
   examId: string;
   questionId: string;
   mode: StudyMode;
+  kind: SessionKind;
+  title: string;
   profileId: string;
   status: "active" | "completed";
   followUpCount: number;
   createdAt: string;
+  updatedAt: string;
   completedAt?: string;
+}
+
+export interface StudyChatSummary extends StudySession {
+  messageCount: number;
+  latestMessage?: string;
+  latestReview?: AIReview;
+}
+
+export interface StudyChatDetail extends StudySession {
+  messages: SessionMessage[];
+  reviews: AIReview[];
+}
+
+export interface TutorTurnResponse {
+  user: SessionMessage;
+  assistant: SessionMessage;
+  title: string;
+  updatedAt: string;
 }
 
 export interface Attempt {

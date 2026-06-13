@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createDatabase } from "../../server/database.js";
+import Database from "better-sqlite3";
 import {
   activateNextRunItem,
   attachSessionToRunItem,
@@ -62,7 +63,37 @@ describe("exam run repository", () => {
     expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining([
       "exam_run_id",
       "exam_run_position",
+      "kind",
+      "title",
+      "updated_at",
     ]));
+    database.close();
+  });
+
+  it("classifies legacy sessions without losing them", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "virtex-legacy-chats-"));
+    temporaryDirectories.push(directory);
+    const filePath = path.join(directory, "virtex.sqlite");
+    const legacy = new Database(filePath);
+    legacy.exec(`
+      CREATE TABLE sessions (
+        id TEXT PRIMARY KEY, exam_id TEXT NOT NULL, question_id TEXT NOT NULL,
+        mode TEXT NOT NULL, profile_id TEXT NOT NULL, status TEXT NOT NULL,
+        follow_up_count INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
+        completed_at TEXT
+      );
+      INSERT INTO sessions VALUES
+        ('study-1', 'exam', 'q1', 'study', 'mentor', 'active', 0, '2026-01-01T00:00:00.000Z', NULL),
+        ('exam-1', 'exam', 'q2', 'exam', 'strict', 'completed', 0, '2026-01-02T00:00:00.000Z', '2026-01-02T01:00:00.000Z');
+    `);
+    legacy.close();
+
+    const database = createDatabase(filePath);
+    const rows = database.prepare("SELECT id, kind, title, updated_at FROM sessions ORDER BY id").all();
+    expect(rows).toEqual([
+      { id: "exam-1", kind: "exam", title: "Экзамен", updated_at: "2026-01-02T01:00:00.000Z" },
+      { id: "study-1", kind: "review", title: "Проверка ответа", updated_at: "2026-01-01T00:00:00.000Z" },
+    ]);
     database.close();
   });
 });

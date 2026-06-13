@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import type { ReviewMessage } from "./prompt.js";
+import type { ReviewMessage, TutorRequest } from "./prompt.js";
 
 export interface ReviewProviderInput {
   messages: ReviewMessage[];
@@ -10,6 +10,7 @@ export interface ReviewProviderInput {
 export interface AIProvider {
   readonly model: string;
   review(input: ReviewProviderInput): Promise<unknown>;
+  chat(input: TutorRequest): Promise<string>;
   testConnection(): Promise<{ ok: boolean; model: string; message?: string }>;
 }
 
@@ -91,6 +92,18 @@ export class OpenAICompatibleProvider implements AIProvider {
     const content = response.choices[0]?.message.content;
     if (!content) throw new Error("AI provider returned an empty response");
     return JSON.parse(content);
+  }
+
+  async chat(input: TutorRequest): Promise<string> {
+    const response = await this.client.chat.completions.create({
+      model: this.model,
+      messages: input.messages,
+      max_completion_tokens: 1_200,
+      reasoning_effort: "minimal",
+    });
+    const content = response.choices[0]?.message.content?.trim();
+    if (!content) throw new Error("AI provider returned an empty response");
+    return content;
   }
 
   async testConnection() {

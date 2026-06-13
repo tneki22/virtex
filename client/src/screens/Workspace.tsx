@@ -4,10 +4,14 @@ import {
   BookmarkCheck,
   CheckCircle2,
   ChevronRight,
+  ClipboardCheck,
+  History,
+  BookOpen,
   Menu,
   MessageSquare,
   Mic,
   PanelRightOpen,
+  Plus,
   Search,
   Send,
   Sparkles,
@@ -21,6 +25,9 @@ import type {
   ExamQuestionCount,
   ExamRun,
   ExamRunSummary as ExamRunSummaryData,
+  SessionKind,
+  StudyChatDetail,
+  StudyChatSummary,
   StudyMode,
   StudySession,
 } from "../../../shared/contracts.js";
@@ -90,6 +97,12 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
   const [examRun, setExamRun] = useState<ExamRun | null>(null);
   const [examSummary, setExamSummary] = useState<ExamRunSummaryData | null>(null);
   const [loadingRun, setLoadingRun] = useState(false);
+  const [chatHistory, setChatHistory] = useState<StudyChatSummary[]>([]);
+  const [activeChat, setActiveChat] = useState<StudyChatDetail | null>(null);
+  const [chatHistoryOpen, setChatHistoryOpen] = useState(false);
+  const [newChatOpen, setNewChatOpen] = useState(false);
+  const [newChatKind, setNewChatKind] = useState<Exclude<SessionKind, "exam"> | null>(null);
+  const [loadingChat, setLoadingChat] = useState(false);
   const voiceInput = useVoiceInput({
     api,
     questionId: question?.id ?? "",
@@ -141,23 +154,56 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
     setReview(null);
     setDialogueTurns([]);
     setCompleted(false);
+    setActiveChat(null);
+    setChatHistory([]);
+    setNewChatOpen(false);
+    setNewChatKind(null);
     void api
       .getQuestion(examId, selectedQuestionId)
       .then((loadedQuestion) => {
         setQuestion(loadedQuestion);
         setNote(loadedQuestion.note);
-        const draftKey = `virtex:draft:${examId}:${loadedQuestion.id}:${runId ?? mode}`;
-        setAnswer(localStorage.getItem(draftKey) ?? "");
+        if (mode === "exam") {
+          const draftKey = `virtex:draft:${examId}:${loadedQuestion.id}:${runId ?? mode}`;
+          setAnswer(localStorage.getItem(draftKey) ?? "");
+        } else {
+          setAnswer("");
+        }
       })
       .catch((reason: Error) => setError(reason.message));
   }, [api, examId, mode, runId, selectedQuestionId]);
 
+  useEffect(() => {
+    if (mode !== "study" || !question) return;
+    let cancelled = false;
+    setLoadingChat(true);
+    void api.listChats(examId, question.id)
+      .then(async (history) => {
+        if (cancelled) return;
+        setChatHistory(history);
+        if (history.length === 0) return;
+        const detail = await api.getChat(history[0].id);
+        if (!cancelled) restoreChat(detail);
+      })
+      .catch((reason: Error) => {
+        if (!cancelled) setError(reason.message);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingChat(false);
+      });
+    return () => { cancelled = true; };
+  }, [api, examId, mode, question?.id]);
+
   const answersLocked = mode === "exam" && !completed;
 
+  const draftKey = question
+    ? `virtex:draft:${examId}:${question.id}:${mode === "study" ? activeChat?.id ?? "new" : runId ?? mode}`
+    : "";
+
   useEffect(() => {
-    if (!question) return;
-    localStorage.setItem(`virtex:draft:${examId}:${question.id}:${runId ?? mode}`, answer);
-  }, [answer, examId, mode, question, runId]);
+    if (!draftKey) return;
+    localStorage.setItem(draftKey, answer);
+  }, [answer, draftKey]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -165,12 +211,12 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
         event.preventDefault();
         searchInput.current?.focus();
       }
-      if (event.key === "[") setLeftOpen((value) => !value);
+      if (event.key === "[" && mode === "study") setLeftOpen((value) => !value);
       if (event.key === "]") setRightOpen((value) => !value);
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
+  }, [mode]);
 
   const filteredQuestions = useMemo(() => {
     if (!exam) return [];
@@ -196,6 +242,57 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
     return created;
   }
 
+  function restoreChat(chat: StudyChatDetail) {
+    setActiveChat(chat);
+    setProfileId(chat.profileId);
+    setSession(null);
+    setDialogueTurns(chat.messages.map((message) => ({
+      id: message.id,
+      role: message.role === "user" ? "student" : "examiner",
+      text: message.content,
+    })));
+    const latestReview = chat.reviews.at(-1);
+    setReview(latestReview ? { ...latestReview, xp: 0 } : null);
+    setCompleted(chat.status === "completed");
+    const key = `virtex:draft:${examId}:${chat.questionId}:${chat.id}`;
+    setAnswer(chat.status === "completed" ? "" : localStorage.getItem(key) ?? "");
+    setChatHistoryOpen(false);
+    setNewChatOpen(false);
+    setNewChatKind(null);
+  }
+
+  async function openChat(chatId: string) {
+    setLoadingChat(true);
+    setError("");
+    try {
+      restoreChat(await api.getChat(chatId));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Не удалось открыть чат");
+    } finally {
+      setLoadingChat(false);
+    }
+  }
+
+  async function createStudyChat() {
+    if (!question || !newChatKind || !profileId || loadingChat) return;
+    setLoadingChat(true);
+    setError("");
+    try {
+      const chat = await api.createChat({
+        examId,
+        questionId: question.id,
+        kind: newChatKind,
+        profileId,
+      });
+      setChatHistory((history) => [{ ...chat, messageCount: 0 }, ...history]);
+      restoreChat(chat);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Не удалось создать чат");
+    } finally {
+      setLoadingChat(false);
+    }
+  }
+
   async function submitAnswer() {
     if (!answer.trim() || !question || loadingReview || completed) return;
     const submittedAnswer = answer.trim();
@@ -208,13 +305,81 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
     setLoadingReview(true);
     setError("");
     try {
-      const currentSession = await ensureSession();
-      const result = await api.review(currentSession.id, submittedAnswer);
+      if (mode === "study" && !activeChat) throw new Error("Сначала создайте чат");
+      if (mode === "study" && activeChat?.kind === "tutor") {
+        const turn = await api.sendTutorMessage(activeChat.id, submittedAnswer);
+        setDialogueTurns((turns) => [
+          ...turns,
+          { id: turn.assistant.id, role: "examiner", text: turn.assistant.content },
+        ]);
+        setActiveChat({
+          ...activeChat,
+          title: turn.title,
+          updatedAt: turn.updatedAt,
+          messages: [...activeChat.messages, turn.user, turn.assistant],
+        });
+        setChatHistory((history) => history.map((item) => item.id === activeChat.id
+          ? { ...item, title: turn.title, updatedAt: turn.updatedAt, latestMessage: turn.assistant.content, messageCount: item.messageCount + 2 }
+          : item).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)));
+        setAnswer("");
+        localStorage.removeItem(draftKey);
+        return;
+      }
+      const currentSession = mode === "study" ? activeChat! : await ensureSession();
+      const result = mode === "study"
+        ? await api.reviewChat(currentSession.id, submittedAnswer)
+        : await api.review(currentSession.id, submittedAnswer);
       setReview(result);
       setDialogueTurns((turns) => [
         ...turns,
         { id: crypto.randomUUID(), role: "examiner", text: result.examinerMessage },
       ]);
+      if (activeChat && mode === "study") {
+        const now = new Date().toISOString();
+        const defaultTitle = "Проверка ответа";
+        const normalized = submittedAnswer.replace(/\s+/g, " ").trim();
+        const title = activeChat.title === defaultTitle
+          ? normalized.length <= 64 ? normalized : `${normalized.slice(0, 61).trimEnd()}…`
+          : activeChat.title;
+        const chatStatus: StudySession["status"] = result.action === "final" ? "completed" : "active";
+        const userMessage = {
+          id: submittedTurn.id,
+          sessionId: activeChat.id,
+          role: "user" as const,
+          content: submittedAnswer,
+          createdAt: now,
+        };
+        const assistantMessage = {
+          id: crypto.randomUUID(),
+          sessionId: activeChat.id,
+          role: "assistant" as const,
+          content: result.examinerMessage,
+          createdAt: now,
+        };
+        setActiveChat({
+          ...activeChat,
+          title,
+          updatedAt: now,
+          followUpCount: activeChat.followUpCount + (result.action === "clarify" ? 1 : 0),
+          status: chatStatus,
+          ...(result.action === "final" ? { completedAt: now } : {}),
+          messages: [...activeChat.messages, userMessage, assistantMessage],
+          reviews: [...activeChat.reviews, result],
+        });
+        setChatHistory((history) => history.map((item) => item.id === activeChat.id
+          ? {
+              ...item,
+              title,
+              updatedAt: now,
+              status: chatStatus,
+              followUpCount: item.followUpCount + (result.action === "clarify" ? 1 : 0),
+              latestMessage: result.examinerMessage,
+              latestReview: result,
+              messageCount: item.messageCount + 2,
+              ...(result.action === "final" ? { completedAt: now } : {}),
+            }
+          : item).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)));
+      }
       if (result.action === "clarify") {
         setAnswer("");
       } else {
@@ -233,7 +398,7 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
             },
           };
         });
-        localStorage.removeItem(`virtex:draft:${examId}:${question.id}:${runId ?? mode}`);
+        localStorage.removeItem(draftKey);
       }
     } catch (reason) {
       setDialogueTurns((turns) => turns.filter((turn) => turn.id !== submittedTurn.id));
@@ -363,6 +528,7 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
     );
   }
   if (!question) return <LoadingState label="Открываем рабочее пространство" />;
+  const activeProfile = exam.profiles.find((profile) => profile.id === (activeChat?.profileId ?? profileId));
 
   return (
     <div className="workspace-page">
@@ -374,19 +540,19 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
           <strong>{modeLabels[mode]}</strong>
         </div>
         <div className="workspace-tools">
-          <button className="icon-button tablet-only" onClick={() => setLeftOpen(true)} aria-label="Открыть список вопросов"><Menu size={19} /></button>
+          {mode === "study" && <button className="icon-button tablet-only" onClick={() => setLeftOpen(true)} aria-label="Открыть список вопросов"><Menu size={19} /></button>}
           <button className="icon-button tablet-only" onClick={() => setRightOpen(true)} aria-label="Открыть ответы и заметки"><PanelRightOpen size={19} /></button>
         </div>
       </header>
 
       <div
-        className="workspace-grid"
+        className={`workspace-grid ${mode === "exam" ? "workspace-grid-exam" : ""}`}
         style={{
           "--left-panel": `${panelLayout.layout.left}px`,
           "--right-panel": `${panelLayout.layout.right}px`,
         } as CSSProperties}
       >
-        <aside className={`question-panel ${leftOpen ? "is-open" : ""}`} aria-label="Навигация по вопросам">
+        {mode === "study" && <aside className={`question-panel ${leftOpen ? "is-open" : ""}`} aria-label="Навигация по вопросам">
           <div className="panel-mobile-head"><strong>Вопросы</strong><button className="icon-button" onClick={() => setLeftOpen(false)} aria-label="Закрыть список"><X size={18} /></button></div>
           <div className="question-search">
             <Search size={16} />
@@ -395,7 +561,7 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
           </div>
           <div className="question-panel-caption">
             <span>{filteredQuestions.length} вопросов</span>
-            <span>{mode === "exam" ? "выбран случайно" : "ручной выбор"}</span>
+            <span>ручной выбор</span>
           </div>
           <div className="question-list">
             {filteredQuestions.map((item) => (
@@ -403,7 +569,6 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
                 key={item.id}
                 className={`question-list-item ${item.id === question.id ? "is-active" : ""}`}
                 onClick={() => selectQuestion(item.id)}
-                disabled={mode === "exam"}
                 aria-label={`Вопрос ${item.officialNumber}: ${item.displayText}`}
               >
                 <span className="question-number">{String(item.officialNumber).padStart(2, "0")}</span>
@@ -412,9 +577,9 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
               </button>
             ))}
           </div>
-        </aside>
+        </aside>}
 
-        <PanelResizeHandle
+        {mode === "study" && <PanelResizeHandle
           label="Изменить ширину списка вопросов"
           value={panelLayout.layout.left}
           min={MIN_LEFT}
@@ -422,7 +587,7 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
           onChange={(value) => panelLayout.setSide("left", value)}
           onPointerStart={(event) => panelLayout.startResize("left", event)}
           onReset={panelLayout.reset}
-        />
+        />}
 
         <main className="answer-panel">
           <div className="question-heading-row">
@@ -438,23 +603,78 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
             </button>
           </div>
 
-          <div className="readiness-strip">
-            <span className={`readiness-dot ${question.progress.readiness}`} />
-            {readinessLabels[question.progress.readiness]}
-            {question.progress.bestScore !== undefined && <strong>{question.progress.bestScore}/100</strong>}
-            {examRun && <strong>{examRun.currentPosition} из {examRun.questionCount}</strong>}
-            <span>{question.progress.attempts} попыток</span>
-          </div>
+          {mode === "study" ? (
+            <div className="readiness-strip">
+              <span className={`readiness-dot ${question.progress.readiness}`} />
+              {readinessLabels[question.progress.readiness]}
+              {question.progress.bestScore !== undefined && <strong>{question.progress.bestScore}/100</strong>}
+              <span>{question.progress.attempts} попыток</span>
+            </div>
+          ) : (
+            <div className="exam-question-progress">Вопрос {examRun?.currentPosition ?? 1} из {examRun?.questionCount ?? 1}</div>
+          )}
 
-          <ExaminerProfilePicker
-            profiles={exam.profiles}
-            value={profileId}
-            disabled={Boolean(session || examRun)}
-            onChange={setProfileId}
-          />
+          {mode === "study" && (
+            <section className="chat-controls" aria-label="Управление чатами">
+              <div className="chat-current">
+                <span className={`chat-kind kind-${activeChat?.kind ?? "empty"}`}>
+                  {activeChat?.kind === "tutor" ? "Разбор темы" : activeChat?.kind === "review" ? "Проверка ответа" : "Чат не выбран"}
+                </span>
+                <strong title={activeChat?.title}>{activeChat?.title ?? "Создайте чат для работы с вопросом"}</strong>
+                {activeProfile && activeChat && <span className="chat-profile">{activeProfile.name}</span>}
+              </div>
+              <div className="chat-actions">
+                <button className="secondary-button" disabled={chatHistory.length === 0} onClick={() => setChatHistoryOpen((value) => !value)}><History size={15} /> История</button>
+                <button className="primary-button" onClick={() => { setNewChatOpen(true); setNewChatKind(null); setChatHistoryOpen(false); }}><Plus size={15} /> Новый чат</button>
+              </div>
+              {chatHistoryOpen && (
+                <div className="chat-history-popover">
+                  {chatHistory.map((chat) => (
+                    <button key={chat.id} className={chat.id === activeChat?.id ? "is-active" : ""} onClick={() => void openChat(chat.id)}>
+                      <span>{chat.kind === "tutor" ? "Разбор" : "Оценка"}</span>
+                      <strong>{chat.title}</strong>
+                      <small>{chat.messageCount} сообщений</small>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
 
-          <section className="answer-editor-section">
-            <div className="editor-label"><span>{review?.action === "clarify" ? "Ваше уточнение" : "Ваш ответ"}</span><small>{completed ? "Попытка завершена" : "Черновик сохраняется локально"}</small></div>
+          {mode === "study" && newChatOpen && (
+            <section className="new-chat-card" aria-label="Создание чата">
+              <p className="eyebrow">Новый чат</p>
+              {!newChatKind ? (
+                <div className="chat-kind-options">
+                  <button onClick={() => setNewChatKind("tutor")}><BookOpen size={20} /><strong>Разобрать тему</strong><span>Свободный диалог, примеры и объяснения</span></button>
+                  <button onClick={() => setNewChatKind("review")}><ClipboardCheck size={20} /><strong>Проверить ответ</strong><span>Уточнения и итоговая оценка</span></button>
+                </div>
+              ) : (
+                <>
+                  <ExaminerProfilePicker profiles={exam.profiles} value={profileId} onChange={setProfileId} />
+                  <div className="new-chat-actions">
+                    <button className="secondary-button" onClick={() => setNewChatKind(null)}>Назад</button>
+                    <button className="primary-button" disabled={loadingChat} onClick={() => void createStudyChat()}>Создать чат</button>
+                  </div>
+                </>
+              )}
+            </section>
+          )}
+
+          {mode === "study" && activeChat?.kind === "tutor" && (activeProfile?.quickPrompts?.length ?? 0) > 0 && (
+            <div className="quick-prompts" aria-label="Быстрые промпты">
+              {activeProfile!.quickPrompts!.map((prompt) => (
+                <button key={prompt.id} onClick={() => setAnswer(prompt.prompt)}>{prompt.label}</button>
+              ))}
+            </div>
+          )}
+
+          {mode === "study" && !activeChat && !newChatOpen && !loadingChat && (
+            <div className="chat-empty-state"><MessageSquare size={22} /><p>Создайте чат для разбора темы или проверки ответа.</p></div>
+          )}
+
+          {(mode === "exam" || activeChat) && <section className="answer-editor-section">
+            <div className="editor-label"><span>{activeChat?.kind === "tutor" ? "Сообщение" : review?.action === "clarify" ? "Ваше уточнение" : "Ваш ответ"}</span><small>{completed ? "Чат завершён" : "Черновик сохраняется локально"}</small></div>
             {dialogueTurns.length > 0 && (
               <div className="dialogue-trail" aria-label="Предыдущие реплики">
                 {dialogueTurns.map((turn) => (
@@ -475,7 +695,7 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
                 if ((event.ctrlKey || event.metaKey) && event.key === "Enter") void submitAnswer();
               }}
               placeholder={mode === "study" ? "Сформулируйте ответ своими словами…" : "Отвечайте так, как говорили бы на экзамене…"}
-              aria-label="Ответ на вопрос"
+              aria-label={mode === "study" ? "Сообщение чата" : "Ответ на вопрос"}
             />
             <div className="editor-footer">
               <div className="editor-meta">
@@ -494,10 +714,10 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
                 {voiceInput.error && <span className="voice-error">{voiceInput.error}</span>}
               </div>
               <button className="primary-button" disabled={!answer.trim() || loadingReview || completed} onClick={() => void submitAnswer()}>
-                {loadingReview ? <><span className="button-spinner" /> Проверяем</> : <><Send size={17} /> {review?.action === "clarify" ? "Ответить на уточнение" : "Отправить ответ"}</>}
+                {loadingReview ? <><span className="button-spinner" /> Отправляем</> : <><Send size={17} /> {activeChat?.kind === "tutor" ? "Отправить сообщение" : review?.action === "clarify" ? "Ответить на уточнение" : "Проверить ответ"}</>}
               </button>
             </div>
-          </section>
+          </section>}
 
           {error && <ErrorState message={error} />}
 
@@ -525,7 +745,7 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
                 : "Завершить экзамен"}
             </button>
           )}
-          {completed && !examRun && (
+          {mode === "exam" && completed && !examRun && (
             <button className="secondary-button new-attempt-button" onClick={startNewAttempt}>Новая попытка</button>
           )}
         </main>
@@ -552,7 +772,6 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
                 <div className="locked-state"><MessageSquare size={24} /><h2>Ответы закрыты</h2><p>Эталон станет доступен после итоговой проверки текущего вопроса.</p></div>
               ) : (
                 <div className="reference-answer">
-                  <p className="eyebrow">Эталон пакета</p>
                   <h2>Опорный ответ</h2>
                   <div className="reference-copy">
                     {question.referenceAnswer
@@ -569,7 +788,7 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
           </div>
         </aside>
       </div>
-      {(leftOpen || rightOpen) && <button className="panel-backdrop tablet-only" aria-label="Закрыть панель" onClick={() => { setLeftOpen(false); setRightOpen(false); }} />}
+      {((mode === "study" && leftOpen) || rightOpen) && <button className="panel-backdrop tablet-only" aria-label="Закрыть панель" onClick={() => { setLeftOpen(false); setRightOpen(false); }} />}
     </div>
   );
 }

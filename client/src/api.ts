@@ -7,9 +7,13 @@ import type {
   ExamRun,
   ExamRunStep,
   SessionMessage,
+  SessionKind,
   SourceDocument,
+  StudyChatDetail,
+  StudyChatSummary,
   StudyMode,
   StudySession,
+  TutorTurnResponse,
 } from "../../shared/contracts.js";
 import { calculateExamRunSummary, selectQuestionIds } from "../../shared/exam-run.js";
 
@@ -60,6 +64,16 @@ export interface ExamApi {
   }): Promise<ExamRunStep>;
   getExamRun(runId: string): Promise<ExamRunStep>;
   advanceExamRun(runId: string): Promise<ExamRunStep>;
+  listChats(examId: string, questionId: string): Promise<StudyChatSummary[]>;
+  createChat(input: {
+    examId: string;
+    questionId: string;
+    kind: Exclude<SessionKind, "exam">;
+    profileId: string;
+  }): Promise<StudyChatDetail>;
+  getChat(chatId: string): Promise<StudyChatDetail>;
+  sendTutorMessage(chatId: string, content: string): Promise<TutorTurnResponse>;
+  reviewChat(chatId: string, answer: string): Promise<ReviewResponse>;
   transcribe(audio: Blob, questionId: string): Promise<{ text: string; model: string }>;
   sendMessage(sessionId: string, content: string): Promise<SessionMessage>;
   review(sessionId: string, answer: string): Promise<ReviewResponse>;
@@ -128,6 +142,35 @@ export class HttpExamApi implements ExamApi {
     });
   }
 
+  listChats(examId: string, questionId: string) {
+    return jsonRequest<StudyChatSummary[]>(`/api/exams/${examId}/questions/${questionId}/chats`);
+  }
+
+  createChat(input: Parameters<ExamApi["createChat"]>[0]) {
+    return jsonRequest<StudyChatDetail>(
+      `/api/exams/${input.examId}/questions/${input.questionId}/chats`,
+      { method: "POST", body: JSON.stringify({ kind: input.kind, profileId: input.profileId }) },
+    );
+  }
+
+  getChat(chatId: string) {
+    return jsonRequest<StudyChatDetail>(`/api/chats/${chatId}`);
+  }
+
+  sendTutorMessage(chatId: string, content: string) {
+    return jsonRequest<TutorTurnResponse>(`/api/chats/${chatId}/messages`, {
+      method: "POST",
+      body: JSON.stringify({ content }),
+    });
+  }
+
+  reviewChat(chatId: string, answer: string) {
+    return jsonRequest<ReviewResponse>(`/api/chats/${chatId}/review`, {
+      method: "POST",
+      body: JSON.stringify({ answer }),
+    });
+  }
+
   async transcribe(audio: Blob, questionId: string) {
     const body = new FormData();
     const extension = audio.type.includes("ogg") ? "ogg" : "webm";
@@ -192,8 +235,14 @@ const mockExam: ExamPackage = {
   description: "Mock-пакет для отладки интерфейса без сервера.",
   subject: "Базы данных",
   profiles: [
-    { id: "mentor", name: "Наставник", description: "Помогает уточнениями", tone: "supportive" },
-    { id: "strict", name: "Комиссия", description: "Требует точности", tone: "strict" },
+    {
+      id: "mentor", name: "Наставник", description: "Помогает уточнениями", tone: "supportive",
+      quickPrompts: [{ id: "pizza", label: "Пример с пиццей", prompt: "Объясни тему на примере доставки пиццы" }],
+    },
+    {
+      id: "strict", name: "Комиссия", description: "Требует точности", tone: "strict",
+      quickPrompts: [{ id: "counterexample", label: "Контрпример", prompt: "Приведи сложный контрпример" }],
+    },
   ],
   documents: [
     {
@@ -239,6 +288,7 @@ mockExam.questions = Array.from({ length: 5 }, (_, index) => ({
 }));
 
 export class MockExamApi implements ExamApi {
+  private static readonly studyChatsStorageKey = "virtex:mock-study-chats";
   private followUps = new Map<string, number>();
   private notes = new Map<string, string>();
   private bookmarks = new Set<string>();
@@ -247,8 +297,42 @@ export class MockExamApi implements ExamApi {
   private sessions = new Map<string, StudySession>();
   private runs = new Map<string, ExamRun>();
   private runSessions = new Map<string, { runId: string; position: number }>();
+  private chatMessages = new Map<string, SessionMessage[]>();
+  private chatReviews = new Map<string, AIReview[]>();
 
-  constructor(private readonly latency = 550) {}
+  constructor(private readonly latency = 550) {
+    this.restoreStudyChats();
+  }
+
+  private restoreStudyChats() {
+    if (typeof localStorage === "undefined") return;
+    try {
+      const stored = JSON.parse(localStorage.getItem(MockExamApi.studyChatsStorageKey) ?? "null") as {
+        sessions?: StudySession[];
+        messages?: Array<[string, SessionMessage[]]>;
+        reviews?: Array<[string, AIReview[]]>;
+      } | null;
+      for (const session of stored?.sessions ?? []) {
+        this.sessions.set(session.id, session);
+        this.followUps.set(session.id, session.followUpCount);
+      }
+      for (const [chatId, messages] of stored?.messages ?? []) this.chatMessages.set(chatId, messages);
+      for (const [chatId, reviews] of stored?.reviews ?? []) this.chatReviews.set(chatId, reviews);
+    } catch {
+      localStorage.removeItem(MockExamApi.studyChatsStorageKey);
+    }
+  }
+
+  private persistStudyChats() {
+    if (typeof localStorage === "undefined") return;
+    const sessions = [...this.sessions.values()].filter((session) => session.kind !== "exam");
+    const chatIds = new Set(sessions.map((session) => session.id));
+    localStorage.setItem(MockExamApi.studyChatsStorageKey, JSON.stringify({
+      sessions,
+      messages: [...this.chatMessages].filter(([chatId]) => chatIds.has(chatId)),
+      reviews: [...this.chatReviews].filter(([chatId]) => chatIds.has(chatId)),
+    }));
+  }
 
   private async delay() {
     await new Promise((resolve) => setTimeout(resolve, this.latency));
@@ -301,10 +385,13 @@ export class MockExamApi implements ExamApi {
       examId: mockExam.id,
       questionId: input.questionId ?? mockExam.questions[0].id,
       mode: input.mode,
+      kind: input.mode === "exam" ? "exam" : "review",
+      title: input.mode === "exam" ? "Экзамен" : "Проверка ответа",
       profileId: input.profileId,
       status: "active" as const,
       followUpCount: 0,
       createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
     };
     this.sessions.set(id, session);
     return session;
@@ -386,6 +473,97 @@ export class MockExamApi implements ExamApi {
     return { run, session };
   }
 
+  async listChats(examId: string, questionId: string): Promise<StudyChatSummary[]> {
+    await this.delay();
+    return [...this.sessions.values()]
+      .filter((session) => session.examId === examId && session.questionId === questionId && session.kind !== "exam")
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+      .map((session) => {
+        const messages = this.chatMessages.get(session.id) ?? [];
+        const reviews = this.chatReviews.get(session.id) ?? [];
+        return {
+          ...session,
+          messageCount: messages.length,
+          ...(messages.at(-1) ? { latestMessage: messages.at(-1)!.content } : {}),
+          ...(reviews.at(-1) ? { latestReview: reviews.at(-1)! } : {}),
+        };
+      });
+  }
+
+  async createChat(input: Parameters<ExamApi["createChat"]>[0]): Promise<StudyChatDetail> {
+    await this.delay();
+    const now = new Date().toISOString();
+    const session: StudySession = {
+      id: crypto.randomUUID(),
+      examId: input.examId,
+      questionId: input.questionId,
+      mode: "study",
+      kind: input.kind,
+      title: input.kind === "tutor" ? "Разбор темы" : "Проверка ответа",
+      profileId: input.profileId,
+      status: "active",
+      followUpCount: 0,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.sessions.set(session.id, session);
+    this.chatMessages.set(session.id, []);
+    this.chatReviews.set(session.id, []);
+    this.persistStudyChats();
+    return { ...session, messages: [], reviews: [] };
+  }
+
+  async getChat(chatId: string): Promise<StudyChatDetail> {
+    await this.delay();
+    const session = this.sessions.get(chatId);
+    if (!session || session.kind === "exam") throw new Error("Chat not found");
+    return {
+      ...session,
+      messages: this.chatMessages.get(chatId) ?? [],
+      reviews: this.chatReviews.get(chatId) ?? [],
+    };
+  }
+
+  async sendTutorMessage(chatId: string, content: string): Promise<TutorTurnResponse> {
+    await this.delay();
+    const session = this.sessions.get(chatId);
+    if (!session || session.kind !== "tutor") throw new Error("Tutor chat not found");
+    const now = new Date().toISOString();
+    const user: SessionMessage = { id: crypto.randomUUID(), sessionId: chatId, role: "user", content, createdAt: now };
+    const assistant: SessionMessage = {
+      id: crypto.randomUUID(), sessionId: chatId, role: "assistant",
+      content: `Разберём это на понятном примере. ${content.includes("пицц") ? "Заказ пиццы проходит как единая операция: либо подтверждаются все шаги, либо заказ отменяется целиком." : "Сначала выделите определение, затем механизм и практическое следствие."}`,
+      createdAt: now,
+    };
+    const title = content.length > 64 ? `${content.slice(0, 61)}…` : content;
+    this.chatMessages.set(chatId, [...(this.chatMessages.get(chatId) ?? []), user, assistant]);
+    this.sessions.set(chatId, { ...session, title, updatedAt: now });
+    this.persistStudyChats();
+    return { user, assistant, title, updatedAt: now };
+  }
+
+  async reviewChat(chatId: string, answer: string): Promise<ReviewResponse> {
+    const result = await this.review(chatId, answer);
+    const session = this.sessions.get(chatId)!;
+    const now = new Date().toISOString();
+    const messages = this.chatMessages.get(chatId) ?? [];
+    this.chatMessages.set(chatId, [
+      ...messages,
+      { id: crypto.randomUUID(), sessionId: chatId, role: "user", content: answer, createdAt: now },
+      { id: crypto.randomUUID(), sessionId: chatId, role: "assistant", content: result.examinerMessage, createdAt: now },
+    ]);
+    this.chatReviews.set(chatId, [...(this.chatReviews.get(chatId) ?? []), result]);
+    this.sessions.set(chatId, {
+      ...session,
+      title: session.title === "Проверка ответа" ? (answer.length > 64 ? `${answer.slice(0, 61)}…` : answer) : session.title,
+      updatedAt: now,
+      status: result.action === "final" ? "completed" : "active",
+      ...(result.action === "final" ? { completedAt: now } : {}),
+    });
+    this.persistStudyChats();
+    return result;
+  }
+
   async transcribe(_audio: Blob, _questionId: string) {
     await this.delay();
     return { text: "Транзакция — логическая единица работы с гарантиями ACID.", model: "mock-whisper" };
@@ -401,18 +579,13 @@ export class MockExamApi implements ExamApi {
   async review(sessionId: string, answer: string): Promise<ReviewResponse> {
     await this.delay();
     if (answer.includes("[api-error]")) throw new Error("Имитация ошибки API");
-    if (answer.includes("[offline]")) {
-      return {
-        action: "unavailable",
-        examinerMessage: "Черновик сохранён офлайн.",
-        personaVerdict: "Без оценки",
-        strengths: [], gaps: [], errors: [], citations: [], advice: "Повторите позже.",
-        packageVersion: mockExam.version, promptVersion: "mock", schemaVersion: "mock", xp: 10,
-      };
-    }
+    if (answer.includes("[offline]")) throw new Error("AI-проверка недоступна");
     const count = this.followUps.get(sessionId) ?? 0;
     if (answer.length < 80 && count < 2) {
-      this.followUps.set(sessionId, count + 1);
+      const followUpCount = count + 1;
+      this.followUps.set(sessionId, followUpCount);
+      const session = this.sessions.get(sessionId);
+      if (session) this.sessions.set(sessionId, { ...session, followUpCount });
       return {
         action: "clarify",
         examinerMessage: "Какие гарантии входят в ACID?",

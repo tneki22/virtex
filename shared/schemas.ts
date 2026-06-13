@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 export const studyModeSchema = z.enum(["study", "exam"]);
+export const sessionKindSchema = z.enum(["tutor", "review", "exam"]);
 export const examQuestionCountSchema = z.union([
   z.literal(1),
   z.literal(2),
@@ -36,6 +37,11 @@ export const examinerProfileSchema = z.object({
   name: z.string().min(1),
   description: z.string().min(1),
   tone: z.enum(["supportive", "neutral", "strict"]),
+  quickPrompts: z.array(z.object({
+    id: z.string().min(1),
+    label: z.string().min(1),
+    prompt: z.string().min(1),
+  })).optional(),
 });
 
 export const examQuestionSchema = z.object({

@@ -7,6 +7,7 @@ import type {
   AIReview,
   ExamPackage,
   ExamQuestion,
+  SessionKind,
   SessionMessage,
   StudySession,
 } from "../shared/contracts.js";
@@ -29,6 +30,7 @@ import {
 } from "./exam-runs.js";
 import {
   buildReviewRequest,
+  buildTutorRequest,
   PROMPT_VERSION,
   REVIEW_SCHEMA_VERSION,
 } from "./prompt.js";
@@ -48,10 +50,13 @@ interface SessionRow {
   exam_id: string;
   question_id: string;
   mode: string;
+  kind: SessionKind;
+  title: string;
   profile_id: string;
   status: "active" | "completed";
   follow_up_count: number;
   created_at: string;
+  updated_at: string;
   completed_at: string | null;
 }
 
@@ -69,10 +74,13 @@ function sessionFromRow(row: SessionRow) {
     examId: row.exam_id,
     questionId: row.question_id,
     mode: normalizeStudyMode(row.mode),
+    kind: row.kind,
+    title: row.title,
     profileId: row.profile_id,
     status: row.status,
     followUpCount: row.follow_up_count,
     createdAt: row.created_at,
+    updatedAt: row.updated_at,
     ...(row.completed_at ? { completedAt: row.completed_at } : {}),
   };
 }
@@ -171,35 +179,91 @@ export function createApp(options: CreateAppOptions) {
     return message;
   }
 
+  function messagesForSession(sessionId: string): SessionMessage[] {
+    const rows = database
+      .prepare("SELECT * FROM messages WHERE session_id = ? ORDER BY created_at, rowid")
+      .all(sessionId) as MessageRow[];
+    return rows.map((row) => ({
+      id: row.id,
+      sessionId: row.session_id,
+      role: row.role,
+      content: row.content,
+      createdAt: row.created_at,
+    }));
+  }
+
+  function reviewsForSession(sessionId: string): AIReview[] {
+    const rows = database
+      .prepare("SELECT payload_json FROM reviews WHERE session_id = ? ORDER BY created_at, rowid")
+      .all(sessionId) as Array<{ payload_json: string }>;
+    return rows.map((row) => JSON.parse(row.payload_json) as AIReview);
+  }
+
+  function chatDetail(row: SessionRow) {
+    return {
+      ...sessionFromRow(row),
+      messages: messagesForSession(row.id),
+      reviews: reviewsForSession(row.id),
+    };
+  }
+
+  function titleFromMessage(content: string) {
+    const normalized = content.replace(/\s+/g, " ").trim();
+    return normalized.length <= 64 ? normalized : `${normalized.slice(0, 61).trimEnd()}…`;
+  }
+
+  function touchSession(sessionId: string, content?: string) {
+    const current = getSession(sessionId);
+    const defaultTitle = current.kind === "tutor" ? "Разбор темы" : "Проверка ответа";
+    const title = content && current.title === defaultTitle
+      ? titleFromMessage(content)
+      : current.title;
+    const updatedAt = timestamp();
+    database.prepare("UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?")
+      .run(title, updatedAt, sessionId);
+    return { title, updatedAt };
+  }
+
   function createSessionRecord(input: {
     examId: string;
     questionId: string;
     mode: StudySession["mode"];
+    kind?: SessionKind;
+    title?: string;
     profileId: string;
   }): StudySession {
+    const kind = input.kind ?? (input.mode === "exam" ? "exam" : "review");
+    const title = input.title ?? (kind === "tutor" ? "Разбор темы" : kind === "exam" ? "Экзамен" : "Проверка ответа");
+    const createdAt = timestamp();
     const session: StudySession = {
       id: randomUUID(),
       examId: input.examId,
       questionId: input.questionId,
       mode: input.mode,
+      kind,
+      title,
       profileId: input.profileId,
       status: "active",
       followUpCount: 0,
-      createdAt: timestamp(),
+      createdAt,
+      updatedAt: createdAt,
     };
     database.prepare(`
       INSERT INTO sessions
-        (id, exam_id, question_id, mode, profile_id, status, follow_up_count, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        (id, exam_id, question_id, mode, kind, title, profile_id, status, follow_up_count, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       session.id,
       session.examId,
       session.questionId,
       session.mode,
+      session.kind,
+      session.title,
       session.profileId,
       session.status,
       session.followUpCount,
       session.createdAt,
+      session.updatedAt,
     );
     return session;
   }
@@ -492,55 +556,113 @@ export function createApp(options: CreateAppOptions) {
     response.status(201).json(session);
   });
 
+  app.get("/api/exams/:examId/questions/:questionId/chats", (request, response) => {
+    const exam = examMap.get(request.params.examId);
+    const question = exam?.questions.find((item) => item.id === request.params.questionId);
+    if (!exam || !question) return response.status(404).json({ error: "Question not found" });
+    const rows = database.prepare(`
+      SELECT sessions.*,
+        (SELECT COUNT(*) FROM messages WHERE messages.session_id = sessions.id) AS message_count,
+        (SELECT content FROM messages WHERE messages.session_id = sessions.id ORDER BY created_at DESC, rowid DESC LIMIT 1) AS latest_message,
+        (SELECT payload_json FROM reviews WHERE reviews.session_id = sessions.id ORDER BY created_at DESC, rowid DESC LIMIT 1) AS latest_review
+      FROM sessions
+      WHERE exam_id = ? AND question_id = ? AND kind IN ('tutor', 'review')
+      ORDER BY updated_at DESC, created_at DESC
+    `).all(exam.id, question.id) as Array<SessionRow & {
+      message_count: number;
+      latest_message: string | null;
+      latest_review: string | null;
+    }>;
+    response.json(rows.map((row) => ({
+      ...sessionFromRow(row),
+      messageCount: row.message_count,
+      ...(row.latest_message ? { latestMessage: row.latest_message } : {}),
+      ...(row.latest_review ? { latestReview: JSON.parse(row.latest_review) } : {}),
+    })));
+  });
+
+  app.post("/api/exams/:examId/questions/:questionId/chats", (request, response) => {
+    const exam = examMap.get(request.params.examId);
+    const question = exam?.questions.find((item) => item.id === request.params.questionId);
+    if (!exam || !question) return response.status(404).json({ error: "Question not found" });
+    const body = z.object({
+      kind: z.enum(["tutor", "review"]),
+      profileId: z.string().min(1),
+    }).parse(request.body);
+    if (!exam.profiles.some((profile) => profile.id === body.profileId)) {
+      return response.status(400).json({ error: "Profile not found" });
+    }
+    const session = createSessionRecord({
+      examId: exam.id,
+      questionId: question.id,
+      mode: "study",
+      kind: body.kind,
+      profileId: body.profileId,
+    });
+    response.status(201).json({ ...session, messages: [], reviews: [] });
+  });
+
+  app.get("/api/chats/:id", (request, response) => {
+    const session = getSession(request.params.id);
+    if (session.kind === "exam") return response.status(409).json({ error: "Exam sessions are not study chats" });
+    response.json(chatDetail(session));
+  });
+
+  app.post("/api/chats/:id/messages", async (request, response) => {
+    const session = getSession(request.params.id);
+    if (session.kind !== "tutor") return response.status(409).json({ error: "This chat does not accept tutor messages" });
+    if (session.status === "completed") return response.status(409).json({ error: "Chat is completed" });
+    const { content } = z.object({ content: z.string().trim().min(1).max(8_000) }).parse(request.body);
+    const exam = examMap.get(session.exam_id);
+    const question = exam?.questions.find((item) => item.id === session.question_id);
+    const profile = exam?.profiles.find((item) => item.id === session.profile_id);
+    if (!exam || !question || !profile) return response.status(409).json({ error: "Chat content is unavailable" });
+    if (!aiProvider) return response.status(503).json({ error: "AI tutor is not configured" });
+    let assistantContent: string;
+    try {
+      assistantContent = await aiProvider.chat(buildTutorRequest({
+        exam,
+        question,
+        profile,
+        message: content,
+        dialogue: messagesForSession(session.id),
+      }));
+    } catch {
+      return response.status(502).json({ error: "AI tutor request failed" });
+    }
+    const result = database.transaction(() => {
+      const user = insertMessage(session.id, "user", content);
+      const assistant = insertMessage(session.id, "assistant", assistantContent);
+      const activity = touchSession(session.id, content);
+      return { user, assistant, ...activity };
+    })();
+    response.status(201).json(result);
+  });
+
   app.post("/api/sessions/:id/messages", (request, response) => {
     getSession(request.params.id);
     const { content } = z.object({ content: z.string().min(1) }).parse(request.body);
     response.status(201).json(insertMessage(request.params.id, "user", content));
   });
 
-  app.post("/api/sessions/:id/review", async (request, response) => {
-    const session = getSession(request.params.id);
-    if (session.status === "completed") {
-      return response.status(409).json({ error: "Session is already completed" });
+  async function processReview(sessionId: string, answer: string) {
+    const session = getSession(sessionId);
+    if (session.kind === "tutor") {
+      throw Object.assign(new Error("Tutor chats cannot be scored"), { status: 409 });
     }
-    const { answer } = z
-      .object({ answer: z.string().trim().min(1).max(8_000) })
-      .parse(request.body);
+    if (session.status === "completed") {
+      throw Object.assign(new Error("Session is already completed"), { status: 409 });
+    }
     const exam = examMap.get(session.exam_id);
     const question = exam?.questions.find((candidate) => candidate.id === session.question_id);
     const profile = exam?.profiles.find((candidate) => candidate.id === session.profile_id);
     if (!exam || !question || !profile) {
-      return response.status(409).json({ error: "Session content is unavailable" });
+      throw Object.assign(new Error("Session content is unavailable"), { status: 409 });
     }
-
-    insertMessage(session.id, "user", answer);
-    const dialogueRows = database
-      .prepare("SELECT * FROM messages WHERE session_id = ? ORDER BY created_at, rowid")
-      .all(session.id) as MessageRow[];
-    const dialogue: SessionMessage[] = dialogueRows.map((row) => ({
-      id: row.id,
-      sessionId: row.session_id,
-      role: row.role,
-      content: row.content,
-      createdAt: row.created_at,
-    }));
+    const dialogue = messagesForSession(session.id);
 
     if (!aiProvider) {
-      const review: AIReview = {
-        action: "unavailable",
-        examinerMessage: "AI-проверка недоступна. Черновик сохранён без оценки.",
-        personaVerdict: "Оценка не выставлена.",
-        strengths: [],
-        gaps: [],
-        errors: [],
-        citations: [],
-        advice: "Продолжите изучение по эталону и источникам.",
-        packageVersion: exam.version,
-        promptVersion: PROMPT_VERSION,
-        schemaVersion: REVIEW_SCHEMA_VERSION,
-      };
-      const xp = persistReview(session, review, answer, true);
-      return response.json({ ...review, xp });
+      throw Object.assign(new Error("AI review is not configured"), { status: 503 });
     }
 
     const guardedContent = guardInstructionOnlyAnswer(answer, question);
@@ -552,9 +674,14 @@ export function createApp(options: CreateAppOptions) {
         promptVersion: PROMPT_VERSION,
         schemaVersion: REVIEW_SCHEMA_VERSION,
       };
-      insertMessage(session.id, "assistant", review.examinerMessage);
-      const xp = persistReview(session, review, answer, true, false);
-      return response.json({ ...review, xp });
+      const xp = database.transaction(() => {
+        insertMessage(session.id, "user", answer);
+        insertMessage(session.id, "assistant", review.examinerMessage);
+        const awarded = persistReview(session, review, answer, true, false);
+        touchSession(session.id, answer);
+        return awarded;
+      })();
+      return { ...review, xp };
     }
 
     const requestInput = buildReviewRequest({
@@ -565,23 +692,31 @@ export function createApp(options: CreateAppOptions) {
       dialogue,
       forceFinal: session.follow_up_count >= exam.policy.maxFollowUps,
     });
-    let parsed = validateProviderResponse(
-      await aiProvider.review(requestInput),
-      question,
-      requestInput.forceFinal,
-    );
-    if (!parsed.success) {
+    let parsed;
+    try {
       parsed = validateProviderResponse(
-        await aiProvider.review({ ...requestInput, repair: true }),
+        await aiProvider.review(requestInput),
         question,
         requestInput.forceFinal,
       );
+    } catch {
+      throw Object.assign(new Error("AI review request failed"), { status: 502 });
     }
     if (!parsed.success) {
-      return response.status(502).json({
-        action: "unavailable",
-        examinerMessage: "AI returned an invalid response twice.",
-        error: "invalid_ai_response",
+      try {
+        parsed = validateProviderResponse(
+          await aiProvider.review({ ...requestInput, repair: true }),
+          question,
+          requestInput.forceFinal,
+        );
+      } catch {
+        throw Object.assign(new Error("AI review repair failed"), { status: 502 });
+      }
+    }
+    if (!parsed.success) {
+      throw Object.assign(new Error("AI returned an invalid response twice."), {
+        status: 502,
+        code: "invalid_ai_response",
       });
     }
 
@@ -593,14 +728,31 @@ export function createApp(options: CreateAppOptions) {
       schemaVersion: REVIEW_SCHEMA_VERSION,
     };
     const completed = review.action === "final";
-    if (!completed) {
-      database
-        .prepare("UPDATE sessions SET follow_up_count = follow_up_count + 1 WHERE id = ?")
-        .run(session.id);
-    }
-    insertMessage(session.id, "assistant", review.examinerMessage);
-    const xp = persistReview(session, review, answer, completed);
-    response.json({ ...review, xp });
+    const xp = database.transaction(() => {
+      insertMessage(session.id, "user", answer);
+      insertMessage(session.id, "assistant", review.examinerMessage);
+      if (!completed) {
+        database
+          .prepare("UPDATE sessions SET follow_up_count = follow_up_count + 1 WHERE id = ?")
+          .run(session.id);
+      }
+      const awarded = persistReview(session, review, answer, completed);
+      touchSession(session.id, answer);
+      return awarded;
+    })();
+    return { ...review, xp };
+  }
+
+  app.post("/api/sessions/:id/review", async (request, response) => {
+    const { answer } = z.object({ answer: z.string().trim().min(1).max(8_000) }).parse(request.body);
+    response.json(await processReview(request.params.id, answer));
+  });
+
+  app.post("/api/chats/:id/review", async (request, response) => {
+    const session = getSession(request.params.id);
+    if (session.kind !== "review") return response.status(409).json({ error: "This chat is not a review" });
+    const { answer } = z.object({ answer: z.string().trim().min(1).max(8_000) }).parse(request.body);
+    response.json(await processReview(session.id, answer));
   });
 
   app.put("/api/questions/:id/note", (request, response) => {
