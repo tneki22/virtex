@@ -1,6 +1,6 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import type { ExamApi, ExamDetail } from "../../client/src/api.js";
 import { Workspace } from "../../client/src/screens/Workspace.js";
@@ -77,6 +77,7 @@ function createApi(): ExamApi {
     createExamRun: vi.fn(),
     getExamRun: vi.fn(),
     advanceExamRun: vi.fn(),
+    cancelExamRun: vi.fn(),
     listChats: vi.fn().mockResolvedValue([]),
     createChat: vi.fn(),
     getChat: vi.fn(),
@@ -90,9 +91,17 @@ function createApi(): ExamApi {
       .fn()
       .mockResolvedValue({ questionId: "q-1", bookmarked: true }),
     getHistory: vi.fn(),
-    testAI: vi.fn(),
-    getSettingsStatus: vi.fn(),
+    getExamHistory: vi.fn(),
+    getAISettings: vi.fn(),
+    updateAISettings: vi.fn(),
+    testAIText: vi.fn(),
+    testAISpeech: vi.fn(),
   };
+}
+
+function LocationProbe() {
+  const location = useLocation();
+  return <output aria-label="location">{`${location.pathname}${location.search}`}</output>;
 }
 
 function renderWorkspace(api: ExamApi, route: string) {
@@ -103,12 +112,162 @@ function renderWorkspace(api: ExamApi, route: string) {
           path="/exams/:examId/workspace/:questionId"
           element={<Workspace api={api} />}
         />
+        <Route path="*" element={<LocationProbe />} />
       </Routes>
     </MemoryRouter>,
   );
 }
 
 describe("Workspace", () => {
+  it("confirms cancellation, clears run drafts, and stays put when cancellation fails", async () => {
+    const user = userEvent.setup();
+    const api = createApi() as ExamApi & { cancelExamRun: ReturnType<typeof vi.fn> };
+    api.cancelExamRun = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(api.getExamRun).mockResolvedValue({
+      run: {
+        id: "run-1",
+        examId: "exam",
+        profileId: "neutral",
+        questionCount: 1,
+        currentPosition: 1,
+        status: "active",
+        items: [{ id: "i1", questionId: "q-1", position: 1, status: "active", sessionId: "session", xp: 0 }],
+        createdAt: "2026-06-14T10:00:00.000Z",
+      },
+      session: {
+        id: "session",
+        examId: "exam",
+        questionId: "q-1",
+        mode: "exam",
+        kind: "exam",
+        title: "Экзамен",
+        profileId: "neutral",
+        status: "active",
+        followUpCount: 0,
+        createdAt: "2026-06-14T10:00:00.000Z",
+        updatedAt: "2026-06-14T10:00:00.000Z",
+      },
+    });
+    localStorage.setItem("virtex:draft:exam:q-1:run-1", "first");
+    localStorage.setItem("virtex:draft:exam:q-2:run-1", "second");
+    localStorage.setItem("virtex:draft:exam:q-1:run-2", "other run");
+    renderWorkspace(api, "/exams/exam/workspace/q-1?mode=exam&run=run-1");
+
+    await user.click(await screen.findByRole("button", { name: /^выйти$/i }));
+    expect(screen.getByRole("dialog", { name: /прервать экзамен/i })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /остаться/i }));
+    expect(api.cancelExamRun).not.toHaveBeenCalled();
+
+    api.cancelExamRun.mockRejectedValueOnce(new Error("Не удалось прервать экзамен"));
+    await user.click(screen.getByRole("button", { name: /^выйти$/i }));
+    await user.click(screen.getByRole("button", { name: /прервать экзамен/i }));
+    expect(within(screen.getByRole("dialog")).getByRole("alert")).toHaveTextContent("Не удалось прервать экзамен");
+    expect(screen.queryByLabelText("location")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /прервать экзамен/i }));
+    expect(await screen.findByLabelText("location")).toHaveTextContent("/exams/exam");
+    expect(localStorage.getItem("virtex:draft:exam:q-1:run-1")).toBeNull();
+    expect(localStorage.getItem("virtex:draft:exam:q-2:run-1")).toBeNull();
+    expect(localStorage.getItem("virtex:draft:exam:q-1:run-2")).toBe("other run");
+  });
+  it("navigates between questions without leaving fullscreen answers", async () => {
+    const user = userEvent.setup();
+    const api = createApi();
+    const secondQuestionSummary = {
+      ...exam.questions[0],
+      id: "q-2",
+      officialNumber: 2,
+      officialText: "What is isolation?",
+      displayText: "What is isolation?",
+    };
+    const secondQuestion = {
+      ...secondQuestionSummary,
+      referenceAnswer: "Isolation keeps concurrent transactions independent.",
+      note: "",
+      bookmarked: false,
+      progress: { attempts: 0, readiness: "not_started" as const },
+    };
+    vi.mocked(api.getExam).mockResolvedValue({
+      ...exam,
+      questions: [...exam.questions, secondQuestionSummary],
+    });
+    vi.mocked(api.getQuestion).mockImplementation(async (_examId, questionId) =>
+      questionId === "q-2" ? secondQuestion : question,
+    );
+
+    renderWorkspace(api, "/exams/exam/workspace/q-1?mode=study");
+    const referencePanel = await screen.findByRole("complementary", { name: /ответы и заметки/i });
+    await user.click(within(referencePanel).getByRole("button", { name: /развернуть документ на весь экран/i }));
+
+    expect(within(referencePanel).getByText("1 из 2")).toBeInTheDocument();
+    expect(within(referencePanel).getByRole("button", { name: /предыдущий вопрос/i })).toBeDisabled();
+    await user.click(within(referencePanel).getByRole("button", { name: /следующий вопрос/i }));
+
+    expect(await within(referencePanel).findByText(secondQuestion.referenceAnswer)).toBeInTheDocument();
+    expect(referencePanel).toHaveClass("is-fullscreen");
+    expect(within(referencePanel).getByText("2 из 2")).toBeInTheDocument();
+    expect(within(referencePanel).getByRole("button", { name: /следующий вопрос/i })).toBeDisabled();
+  });
+
+  it("uses question text, topic counts, and collapsible workspace panels", async () => {
+    const user = userEvent.setup();
+    renderWorkspace(createApi(), "/exams/exam/workspace/q-1?mode=study");
+
+    const questionPanel = await screen.findByRole("complementary", {
+      name: /навигация по вопросам/i,
+    });
+    expect(screen.queryByRole("banner")).not.toBeInTheDocument();
+    expect(within(questionPanel).getByRole("link", { name: /в меню/i })).toBeInTheDocument();
+    expect(within(questionPanel).getByText("What is a transaction?", { selector: "strong" })).toBeInTheDocument();
+    expect(within(questionPanel).queryByText("Вопрос 1", { selector: "strong" })).not.toBeInTheDocument();
+    expect(within(questionPanel).getByText("1 тема")).toBeInTheDocument();
+    expect(within(questionPanel).queryByText(/ручной выбор/i)).not.toBeInTheDocument();
+
+    await user.click(within(questionPanel).getByRole("button", { name: /свернуть список вопросов/i }));
+    expect(within(questionPanel).queryByRole("textbox", { name: /поиск вопросов/i })).not.toBeInTheDocument();
+    await user.click(within(questionPanel).getByRole("button", { name: /развернуть список вопросов/i }));
+    expect(within(questionPanel).getByRole("textbox", { name: /поиск вопросов/i })).toBeInTheDocument();
+
+    const referencePanel = screen.getByRole("complementary", { name: /ответы и заметки/i });
+    await user.click(within(referencePanel).getByRole("button", { name: /развернуть документ на весь экран/i }));
+    expect(referencePanel).toHaveClass("is-fullscreen");
+    await user.click(within(referencePanel).getByRole("button", { name: /вернуть документ в панель/i }));
+    expect(referencePanel).not.toHaveClass("is-fullscreen");
+  });
+
+  it("exposes the chat history disclosure state", async () => {
+    const user = userEvent.setup();
+    const api = createApi();
+    vi.mocked(api.listChats).mockResolvedValue([{
+      id: "chat-1",
+      examId: "exam",
+      questionId: "q-1",
+      mode: "study",
+      kind: "tutor",
+      title: "Transaction chat",
+      profileId: "neutral",
+      status: "active",
+      followUpCount: 0,
+      messageCount: 1,
+      createdAt: "2026-06-14T10:00:00.000Z",
+      updatedAt: "2026-06-14T10:00:00.000Z",
+    }]);
+
+    renderWorkspace(api, "/exams/exam/workspace/q-1?mode=study");
+
+    const historyButton = await screen.findByRole("button", { name: /история/i });
+    expect(historyButton).toHaveAttribute("aria-expanded", "false");
+    expect(historyButton).toHaveAttribute("aria-controls", "chat-history-popover");
+
+    await user.click(historyButton);
+
+    expect(historyButton).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("region", { name: /история чатов/i })).toHaveAttribute(
+      "id",
+      "chat-history-popover",
+    );
+  });
+
   it("restores the latest completed review without another AI request", async () => {
     const api = createApi();
     const review = {
@@ -362,7 +521,10 @@ describe("Workspace", () => {
   it("shows the reference immediately in study mode", async () => {
     renderWorkspace(createApi(), "/exams/exam/workspace/q-1?mode=study");
 
-    expect(await screen.findByText("What is a transaction?")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 1, name: "What is a transaction?" })).toBeInTheDocument();
+    const referencePanel = screen.getByRole("complementary", { name: /ответы и заметки/i });
+    expect(within(referencePanel).getByRole("heading", { level: 2, name: question.displayText })).toBeInTheDocument();
+    expect(within(referencePanel).queryByRole("heading", { name: /опорный ответ/i })).not.toBeInTheDocument();
     expect(screen.getByText(question.referenceAnswer)).toBeInTheDocument();
   });
 
@@ -376,7 +538,7 @@ describe("Workspace", () => {
 
   it("uses two right tabs and removes the unclear package label", async () => {
     renderWorkspace(createApi(), "/exams/exam/workspace/q-1?mode=study");
-    await screen.findByText("What is a transaction?");
+    await screen.findByRole("heading", { level: 1, name: "What is a transaction?" });
 
     expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
       "Ответы",
@@ -391,7 +553,7 @@ describe("Workspace", () => {
     const user = userEvent.setup();
     const api = createApi();
     renderWorkspace(api, "/exams/exam/workspace/q-1?mode=study");
-    await screen.findByText("What is a transaction?");
+    await screen.findByRole("heading", { level: 1, name: "What is a transaction?" });
 
     await user.click(screen.getByRole("button", { name: /добавить в закладки/i }));
     await user.click(screen.getByRole("tab", { name: /заметки/i }));

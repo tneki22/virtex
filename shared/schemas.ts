@@ -9,6 +9,39 @@ export const examQuestionCountSchema = z.union([
   z.literal(5),
 ]);
 
+export const runtimeAISettingsUpdateSchema = z.object({
+  textProvider: z.enum(["openrouter", "groq"]),
+  textModel: z.string().trim().min(1).max(200),
+  speechProvider: z.enum(["openrouter", "groq", "disabled"]),
+  speechModel: z.string().trim().max(200),
+  openrouterApiKey: z.string().trim().min(1).max(1_000).optional(),
+  groqApiKey: z.string().trim().min(1).max(1_000).optional(),
+  clearOpenrouterApiKey: z.boolean().optional(),
+  clearGroqApiKey: z.boolean().optional(),
+}).superRefine((value, context) => {
+  if (value.speechProvider !== "disabled" && value.speechModel.length === 0) {
+    context.addIssue({
+      code: "custom",
+      path: ["speechModel"],
+      message: "Speech model is required",
+    });
+  }
+  if (value.openrouterApiKey && value.clearOpenrouterApiKey) {
+    context.addIssue({
+      code: "custom",
+      path: ["openrouterApiKey"],
+      message: "Cannot replace and clear the OpenRouter key together",
+    });
+  }
+  if (value.groqApiKey && value.clearGroqApiKey) {
+    context.addIssue({
+      code: "custom",
+      path: ["groqApiKey"],
+      message: "Cannot replace and clear the GroqCloud key together",
+    });
+  }
+});
+
 export const sourceReferenceSchema = z.object({
   documentId: z.string().min(1),
   page: z.number().int().positive(),

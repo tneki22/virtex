@@ -8,6 +8,48 @@ afterEach(() => {
 });
 
 describe("OpenAICompatibleProvider", () => {
+  it("does not expose provider error details from connection tests", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ error: { message: "Invalid key secret-key-value" } }),
+      { status: 401, headers: { "Content-Type": "application/json" } },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = new OpenAICompatibleProvider({
+      apiKey: "secret-key-value",
+      baseUrl: "https://openrouter.test/api/v1",
+      model: "openai/gpt-5-mini",
+    });
+
+    expect(await provider.testConnection()).toEqual({
+      ok: false,
+      model: "openai/gpt-5-mini",
+      message: "Connection failed",
+    });
+  });
+
+  it("tests the selected model with the structured output required by reviews", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      id: "completion-1",
+      object: "chat.completion",
+      created: 1,
+      model: "openai/gpt-5-mini",
+      choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "{\"ok\":true}" } }],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = new OpenAICompatibleProvider({
+      apiKey: "test-key",
+      baseUrl: "https://openrouter.test/api/v1",
+      model: "openai/gpt-5-mini",
+    });
+
+    expect((await provider.testConnection()).ok).toBe(true);
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(body.model).toBe("openai/gpt-5-mini");
+    expect(body.response_format.json_schema.strict).toBe(true);
+  });
+
   it("uses a plain bounded completion for tutor dialogue", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(
@@ -95,5 +137,29 @@ describe("OpenAICompatibleProvider", () => {
     expect(body.max_completion_tokens).toBeLessThanOrEqual(900);
     expect(body.reasoning_effort).toBe("minimal");
     expect(body.seed).toBe(42);
+  });
+
+  it("omits OpenRouter reasoning options for Groq text requests", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      id: "completion-1",
+      object: "chat.completion",
+      created: 1,
+      model: "openai/gpt-oss-20b",
+      choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "Tutor" } }],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = new OpenAICompatibleProvider({
+      provider: "groq",
+      apiKey: "test-key",
+      baseUrl: "https://groq.test/openai/v1",
+      model: "openai/gpt-oss-20b",
+    });
+
+    await provider.chat({ messages: [{ role: "user", content: "Explain" }], estimatedInputTokens: 1 });
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(body.model).toBe("openai/gpt-oss-20b");
+    expect(body.reasoning_effort).toBeUndefined();
   });
 });

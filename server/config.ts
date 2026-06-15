@@ -1,22 +1,14 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { parseEnv } from "node:util";
+import type { RuntimeAIEnvironment } from "./runtime-ai.js";
 
 type Environment = Record<string, string | undefined>;
 
 export interface RuntimeConfig {
   port: number;
   databasePath: string;
-  ai: {
-    apiKey: string;
-    baseUrl: string;
-    model: string;
-  } | null;
-  speech: {
-    apiKey: string;
-    baseUrl: string;
-    model: string;
-  } | null;
+  aiEnvironment: RuntimeAIEnvironment;
 }
 
 export function loadEnvironmentFiles(
@@ -44,25 +36,25 @@ export function resolveRuntimeConfig(root: string, environment: Environment): Ru
   const databasePath = environment.DATABASE_PATH
     ? path.resolve(root, environment.DATABASE_PATH)
     : path.join(dataDirectory, "virtex.sqlite");
-  const apiKey = environment.OPENAI_API_KEY?.trim();
+  const apiKey = (environment.OPENROUTER_API_KEY ?? environment.OPENAI_API_KEY)?.trim();
   const groqApiKey = environment.GROQ_API_KEY?.trim();
 
   return {
     port: Number(environment.PORT ?? 4173),
     databasePath,
-    ai: apiKey
-      ? {
-          apiKey,
-          baseUrl: environment.OPENAI_BASE_URL ?? "https://openrouter.ai/api/v1",
-          model: environment.OPENAI_MODEL ?? "openai/gpt-5-mini",
-        }
-      : null,
-    speech: groqApiKey
-      ? {
-          apiKey: groqApiKey,
-          baseUrl: environment.GROQ_BASE_URL ?? "https://api.groq.com/openai/v1",
-          model: environment.GROQ_WHISPER_MODEL ?? "whisper-large-v3-turbo",
-        }
-      : null,
+    aiEnvironment: {
+      openrouter: {
+        apiKey,
+        baseUrl: environment.OPENROUTER_BASE_URL ?? environment.OPENAI_BASE_URL ?? "https://openrouter.ai/api/v1",
+        textModel: environment.OPENROUTER_TEXT_MODEL ?? environment.OPENAI_MODEL ?? "openai/gpt-5-mini",
+        speechModel: environment.OPENROUTER_SPEECH_MODEL ?? "openai/whisper-large-v3",
+      },
+      groq: {
+        apiKey: groqApiKey,
+        baseUrl: environment.GROQ_BASE_URL ?? "https://api.groq.com/openai/v1",
+        textModel: environment.GROQ_TEXT_MODEL ?? "openai/gpt-oss-20b",
+        speechModel: environment.GROQ_WHISPER_MODEL ?? "whisper-large-v3-turbo",
+      },
+    },
   };
 }

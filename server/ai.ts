@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import type { AIProviderId } from "../shared/contracts.js";
 import type { ReviewMessage, TutorRequest } from "./prompt.js";
 
 export interface ReviewProviderInput {
@@ -15,6 +16,7 @@ export interface AIProvider {
 }
 
 export interface OpenAICompatibleConfig {
+  provider?: AIProviderId;
   apiKey: string;
   baseUrl?: string;
   model: string;
@@ -23,9 +25,11 @@ export interface OpenAICompatibleConfig {
 export class OpenAICompatibleProvider implements AIProvider {
   readonly model: string;
   private readonly client: OpenAI;
+  private readonly provider: AIProviderId;
 
   constructor(config: OpenAICompatibleConfig) {
     this.model = config.model;
+    this.provider = config.provider ?? "openrouter";
     this.client = new OpenAI({
       apiKey: config.apiKey,
       ...(config.baseUrl ? { baseURL: config.baseUrl } : {}),
@@ -86,7 +90,7 @@ export class OpenAICompatibleProvider implements AIProvider {
         content: message.content,
       })),
       max_completion_tokens: 850,
-      reasoning_effort: "minimal",
+      ...(this.provider === "openrouter" ? { reasoning_effort: "minimal" as const } : {}),
       seed: 42,
     });
     const content = response.choices[0]?.message.content;
@@ -99,7 +103,7 @@ export class OpenAICompatibleProvider implements AIProvider {
       model: this.model,
       messages: input.messages,
       max_completion_tokens: 1_200,
-      reasoning_effort: "minimal",
+      ...(this.provider === "openrouter" ? { reasoning_effort: "minimal" as const } : {}),
     });
     const content = response.choices[0]?.message.content?.trim();
     if (!content) throw new Error("AI provider returned an empty response");
@@ -110,16 +114,29 @@ export class OpenAICompatibleProvider implements AIProvider {
     try {
       await this.client.chat.completions.create({
         model: this.model,
-        messages: [{ role: "user", content: "Reply with OK." }],
-        max_completion_tokens: 16,
-        reasoning_effort: "minimal",
+        response_format: {
+          type: "json_schema",
+          json_schema: {
+            name: "connection_test",
+            strict: true,
+            schema: {
+              type: "object",
+              additionalProperties: false,
+              properties: { ok: { type: "boolean" } },
+              required: ["ok"],
+            },
+          },
+        },
+        messages: [{ role: "user", content: "Return a JSON object with ok set to true." }],
+        max_completion_tokens: 32,
+        ...(this.provider === "openrouter" ? { reasoning_effort: "minimal" as const } : {}),
       });
       return { ok: true, model: this.model };
-    } catch (error) {
+    } catch {
       return {
         ok: false,
         model: this.model,
-        message: error instanceof Error ? error.message : "Connection failed",
+        message: "Connection failed",
       };
     }
   }

@@ -1,10 +1,11 @@
-import { ArrowRight, BookOpenText, GraduationCap } from "lucide-react";
+import { ArrowRight, BookOpenText, GraduationCap, History as HistoryIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import type { ExamQuestionCount } from "../../../shared/contracts.js";
 import type { ExamApi, ExamDetail } from "../api.js";
 import { api as defaultApi } from "../api.js";
 import { AppShell, ErrorState, LoadingState } from "../components/AppShell.js";
+import { AIProviderSettings } from "../components/AIProviderSettings.js";
 
 const allowedCounts: ExamQuestionCount[] = [1, 2, 3, 5];
 
@@ -26,6 +27,7 @@ export function ExamOverview({ api = defaultApi }: { api?: ExamApi }) {
         {!exam && !error && <LoadingState />}
         {exam && (
           <section className="mode-section compact-mode-section" aria-labelledby="mode-heading">
+            <Link to="/history" className="overview-history-link"><HistoryIcon size={16} /> История</Link>
             <div className="section-heading compact-heading">
               <p className="eyebrow">{exam.title}</p>
               <h1 id="mode-heading">Выберите режим</h1>
@@ -76,6 +78,7 @@ export function ExamOverview({ api = defaultApi }: { api?: ExamApi }) {
                 </button>
               </article>
             </div>
+            <AIProviderSettings api={api} />
           </section>
         )}
       </main>

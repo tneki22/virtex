@@ -1,5 +1,32 @@
 export type StudyMode = "study" | "exam";
 export type SessionKind = "tutor" | "review" | "exam";
+export type AIProviderId = "openrouter" | "groq";
+export type SpeechProviderId = AIProviderId | "disabled";
+export type KeySource = "application" | "environment" | "missing";
+
+export interface RuntimeAISettings {
+  keys: Record<AIProviderId, { configured: boolean; source: KeySource }>;
+  text: { provider: AIProviderId; model: string; available: boolean };
+  speech: { provider: SpeechProviderId; model: string; available: boolean };
+}
+
+export interface RuntimeAISettingsUpdate {
+  textProvider: AIProviderId;
+  textModel: string;
+  speechProvider: SpeechProviderId;
+  speechModel: string;
+  openrouterApiKey?: string;
+  groqApiKey?: string;
+  clearOpenrouterApiKey?: boolean;
+  clearGroqApiKey?: boolean;
+}
+
+export interface AIConnectionTestResult {
+  ok: boolean;
+  provider: AIProviderId;
+  model: string;
+  message?: string;
+}
 
 export interface QuickPrompt {
   id: string;
@@ -199,4 +226,39 @@ export interface ExamRunStep {
   run: ExamRun;
   session?: StudySession;
   summary?: ExamRunSummary;
+}
+
+export interface ExamHistorySummary {
+  runId: string;
+  examId: string;
+  examTitle: string;
+  questionCount: number;
+  averageScore?: number;
+  totalXp: number;
+  completedAt: string;
+}
+
+export interface ExamHistoryItem {
+  position: number;
+  questionId: string;
+  questionTitle: string;
+  officialText: string;
+  answer: string;
+  baseScore?: number;
+  xp: number;
+  review: AIReview;
+}
+
+export interface ExamHistoryDetail {
+  summary: ExamHistorySummary;
+  items: ExamHistoryItem[];
+}
+
+export interface StudyAttemptHistoryEntry extends Attempt {
+  review: AIReview;
+}
+
+export interface HistoryData {
+  examRuns: ExamHistorySummary[];
+  studyAttempts: StudyAttemptHistoryEntry[];
 }

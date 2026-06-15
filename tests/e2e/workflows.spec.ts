@@ -49,6 +49,20 @@ test("root opens two modes and a tutor dialogue survives reload", async ({ page 
   await expect(page.getByLabel(/предыдущие реплики/i).getByText("Сформулируй вывод одним предложением.")).toBeVisible();
 });
 
+test("overview applies independent text and speech model selections", async ({ page }) => {
+  await page.goto("/exams/mock-database");
+  await expect(page.getByText(/Текст: OpenRouter · openai\/gpt-5-mini/i)).toBeVisible();
+
+  await page.getByLabel("Провайдер текста").selectOption("groq");
+  await page.getByLabel("Модель текста").fill("openai/gpt-oss-20b");
+  await page.getByLabel("Провайдер речи").selectOption("openrouter");
+  await page.getByLabel("Модель речи").fill("openai/whisper-large-v3");
+  await page.getByRole("button", { name: "Сохранить AI-настройки" }).click();
+
+  await expect(page.getByText(/Текст: GroqCloud · openai\/gpt-oss-20b/i)).toBeVisible();
+  await expect(page.getByText(/Речь: OpenRouter · openai\/whisper-large-v3/i)).toBeVisible();
+});
+
 test("a completed review is restored without another request", async ({ page }) => {
   await page.goto("/exams/mock-database/workspace/q-1?mode=study");
   await createStudyChat(page, "review");
@@ -114,6 +128,46 @@ test("three-question exam uses two panels and shows a summary", async ({ page })
 
   await expect(page.getByRole("heading", { name: /результат серии/i })).toBeVisible();
   await expect(page.getByText(/XP/i)).toBeVisible();
+});
+
+test("completed exam opens from history with answers and final feedback", async ({ page }) => {
+  await page.goto("/exams/mock-database");
+  await page.getByRole("button", { name: /открыть экзамен/i }).click();
+  await page.getByRole("button", { name: /начать экзамен/i }).click();
+  await page.getByRole("textbox", { name: /ответ на вопрос/i }).fill(longAnswer);
+  await page.getByRole("button", { name: /проверить ответ/i }).click();
+  await page.getByRole("button", { name: /завершить экзамен/i }).click();
+  await expect(page.getByRole("heading", { name: /результат серии/i })).toBeVisible();
+
+  await page.getByRole("link", { name: /в меню/i }).click();
+  await page.getByRole("link", { name: /история/i }).click();
+  await page.getByRole("link", { name: /демонстрационный экзамен/i }).click();
+
+  await expect(page.getByText(longAnswer)).toBeVisible();
+  await expect(page.getByText("Ответ проверен.")).toBeVisible();
+  await expect(page.getByText(/транзакции и свойства acid/i).first()).toBeVisible();
+});
+
+test("interrupted exam is deleted and absent from history", async ({ page }) => {
+  await page.goto("/exams/mock-database");
+  await page.getByText("2", { exact: true }).click();
+  await page.getByRole("button", { name: /открыть экзамен/i }).click();
+  await page.getByRole("button", { name: /начать экзамен/i }).click();
+  await page.getByRole("textbox", { name: /ответ на вопрос/i }).fill("Черновик прерванного экзамена");
+
+  await page.getByRole("button", { name: /^выйти$/i }).click();
+  await expect(page.getByRole("dialog", { name: /прервать экзамен/i })).toBeVisible();
+  await page.getByRole("button", { name: /остаться/i }).click();
+  await expect(page.getByRole("textbox", { name: /ответ на вопрос/i })).toHaveValue("Черновик прерванного экзамена");
+
+  await page.getByRole("button", { name: /^выйти$/i }).click();
+  await page.getByRole("button", { name: /прервать экзамен/i }).click();
+  await expect(page).toHaveURL(/\/exams\/mock-database$/);
+  await page.getByRole("link", { name: /история/i }).click();
+
+  await expect(page.getByRole("heading", { name: "Экзамены" })).toBeVisible();
+  await expect(page.getByText(/завершённых экзаменов пока нет/i)).toBeVisible();
+  await expect(page.getByRole("link", { name: /демонстрационный экзамен/i })).toHaveCount(0);
 });
 
 test("desktop panels resize, persist, and do not overflow", async ({ page }, testInfo) => {

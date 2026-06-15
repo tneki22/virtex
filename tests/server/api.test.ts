@@ -4,6 +4,7 @@ import type { ExamPackage } from "../../shared/contracts.js";
 import { createApp } from "../../server/app.js";
 import type { AIProvider, ReviewProviderInput } from "../../server/ai.js";
 import { createDatabase } from "../../server/database.js";
+import { RuntimeAIService } from "../../server/runtime-ai.js";
 
 const exam: ExamPackage = {
   id: "exam",
@@ -82,7 +83,7 @@ async function createSession(app: ReturnType<typeof createApp>) {
   const response = await request(app).post("/api/sessions").send({
     examId: "exam",
     questionId: "q-1",
-    mode: "exam",
+    mode: "study",
     profileId: "neutral",
   });
   expect(response.status).toBe(201);
@@ -94,6 +95,118 @@ describe("exam API", () => {
 
   beforeEach(() => {
     database = createDatabase(":memory:");
+  });
+
+  it("applies saved text and speech providers to subsequent requests without restart", async () => {
+    const textCalls: Array<{ provider: string; model: string; kind: string }> = [];
+    const speechCalls: Array<{ provider: string; model: string }> = [];
+    const runtimeAI = new RuntimeAIService({
+      database,
+      environment: {
+        openrouter: {
+          apiKey: "env-openrouter",
+          baseUrl: "https://openrouter.test/api/v1",
+          textModel: "openai/old-text",
+          speechModel: "openai/old-speech",
+        },
+        groq: {
+          apiKey: "env-groq",
+          baseUrl: "https://groq.test/openai/v1",
+          textModel: "llama-old",
+          speechModel: "whisper-old",
+        },
+      },
+      factories: {
+        createTextProvider: ({ provider, model }) => ({
+          model,
+          async chat() {
+            textCalls.push({ provider, model, kind: "chat" });
+            return "Runtime tutor response";
+          },
+          async review() {
+            textCalls.push({ provider, model, kind: "review" });
+            return finalReview;
+          },
+          async testConnection() {
+            textCalls.push({ provider, model, kind: "test" });
+            return { ok: true, model };
+          },
+        }),
+        createSpeechProvider: ({ provider, model }) => ({
+          model,
+          async transcribe() {
+            speechCalls.push({ provider, model });
+            return { text: "Runtime transcript", model };
+          },
+        }),
+      },
+    });
+    const app = createApp({ database, exams: [exam], runtimeAI });
+
+    const saved = await request(app).put("/api/settings/ai").send({
+      textProvider: "groq",
+      textModel: "llama-new",
+      speechProvider: "openrouter",
+      speechModel: "openai/whisper-new",
+    });
+    expect(saved.status).toBe(200);
+    expect(saved.body).toMatchObject({
+      text: { provider: "groq", model: "llama-new" },
+      speech: { provider: "openrouter", model: "openai/whisper-new" },
+    });
+    expect(JSON.stringify(saved.body)).not.toContain("env-openrouter");
+
+    const tutor = await request(app)
+      .post("/api/exams/exam/questions/q-1/chats")
+      .send({ kind: "tutor", profileId: "neutral" });
+    expect((await request(app)
+      .post(`/api/chats/${tutor.body.id}/messages`)
+      .send({ content: "Explain runtime settings" })).status).toBe(201);
+
+    const reviewChat = await request(app)
+      .post("/api/exams/exam/questions/q-1/chats")
+      .send({ kind: "review", profileId: "neutral" });
+    const reviewed = await request(app)
+      .post(`/api/chats/${reviewChat.body.id}/review`)
+      .send({ answer: "A transaction is an atomic unit of work." });
+    expect(reviewed.body.model).toBe("llama-new");
+
+    const textTest = await request(app).post("/api/settings/ai/test-text").send({});
+    expect(textTest.body).toEqual({ ok: true, provider: "groq", model: "llama-new" });
+
+    const transcribed = await request(app)
+      .post("/api/transcriptions")
+      .field("questionId", "q-1")
+      .attach("audio", Buffer.from("audio"), {
+        filename: "answer.webm",
+        contentType: "audio/webm",
+      });
+    expect(transcribed.body).toMatchObject({
+      text: "Runtime transcript",
+      model: "openai/whisper-new",
+      provider: "openrouter",
+    });
+    const speechTest = await request(app)
+      .post("/api/settings/ai/test-speech")
+      .attach("audio", Buffer.from("audio"), {
+        filename: "test.webm",
+        contentType: "audio/webm",
+      });
+    expect(speechTest.body).toMatchObject({
+      ok: true,
+      provider: "openrouter",
+      model: "openai/whisper-new",
+      text: "Runtime transcript",
+    });
+    expect(textCalls).toEqual([
+      { provider: "groq", model: "llama-new", kind: "chat" },
+      { provider: "groq", model: "llama-new", kind: "review" },
+      { provider: "groq", model: "llama-new", kind: "test" },
+    ]);
+    expect(speechCalls).toEqual([
+      { provider: "openrouter", model: "openai/whisper-new" },
+      { provider: "openrouter", model: "openai/whisper-new" },
+    ]);
   });
 
   it("creates, lists, restores, and continues tutor chats without extra reads from AI", async () => {
@@ -188,16 +301,47 @@ describe("exam API", () => {
   });
 
   it("reports provider configuration without exposing credentials", async () => {
+    const runtimeAI = new RuntimeAIService({
+      database,
+      environment: {
+        openrouter: {
+          apiKey: undefined,
+          baseUrl: "https://openrouter.test/api/v1",
+          textModel: "openai/text",
+          speechModel: "openai/whisper",
+        },
+        groq: {
+          apiKey: "groq-secret",
+          baseUrl: "https://groq.test/openai/v1",
+          textModel: "llama",
+          speechModel: "whisper",
+        },
+      },
+      factories: {
+        createTextProvider: ({ model }) => ({
+          model,
+          review: vi.fn(),
+          chat: vi.fn(),
+          testConnection: vi.fn(),
+        }),
+        createSpeechProvider: ({ model }) => ({ model, transcribe: vi.fn() }),
+      },
+    });
     const app = createApp({
       database,
       exams: [exam],
-      aiProvider: null,
-      speechProvider: { model: "whisper", transcribe: vi.fn() },
+      runtimeAI,
     });
-    expect((await request(app).get("/api/settings/status")).body).toEqual({
-      aiConfigured: false,
-      speechConfigured: true,
+    const body = (await request(app).get("/api/settings/ai")).body;
+    expect(body).toMatchObject({
+      keys: {
+        openrouter: { configured: false, source: "missing" },
+        groq: { configured: true, source: "environment" },
+      },
+      text: { provider: "groq", model: "llama", available: true },
+      speech: { provider: "groq", model: "whisper", available: true },
     });
+    expect(JSON.stringify(body)).not.toContain("groq-secret");
   });
 
   it("runs a sequential multi-question exam", async () => {
@@ -255,6 +399,155 @@ describe("exam API", () => {
     }
   });
 
+  it("groups completed exam runs and returns ordered exam history details", async () => {
+    const multiQuestionExam: ExamPackage = {
+      ...exam,
+      questions: Array.from({ length: 3 }, (_, index) => ({
+        ...exam.questions[0],
+        id: `q-${index + 1}`,
+        officialNumber: index + 1,
+        officialText: `Official question ${index + 1}`,
+        displayText: `Question ${index + 1}`,
+      })),
+    };
+    const app = createApp({
+      database,
+      exams: [multiQuestionExam],
+      aiProvider: new SequenceProvider([finalReview, finalReview, finalReview]),
+      random: () => 0,
+    });
+
+    const studySession = await request(app).post("/api/sessions").send({
+      examId: "exam",
+      questionId: "q-1",
+      mode: "study",
+      profileId: "neutral",
+    });
+    await request(app)
+      .post(`/api/sessions/${studySession.body.id}/review`)
+      .send({ answer: "Independent study answer" });
+
+    const created = await request(app).post("/api/exam-runs").send({
+      examId: "exam",
+      profileId: "neutral",
+      questionCount: 2,
+    });
+    const runId = created.body.run.id as string;
+    const answers = ["First exam answer", "Second exam answer"];
+    let sessionId = created.body.session.id as string;
+    for (const answer of answers) {
+      await request(app).post(`/api/sessions/${sessionId}/review`).send({ answer });
+      const next = await request(app).post(`/api/exam-runs/${runId}/next`);
+      sessionId = next.body.session?.id;
+    }
+
+    const history = await request(app).get("/api/history");
+    expect(history.status).toBe(200);
+    expect(history.body.examRuns).toEqual([
+      expect.objectContaining({
+        runId,
+        examId: "exam",
+        examTitle: "Database exam",
+        questionCount: 2,
+        averageScore: 84,
+        totalXp: 40,
+      }),
+    ]);
+    expect(history.body.studyAttempts).toHaveLength(1);
+    expect(history.body.studyAttempts[0]).toMatchObject({
+      sessionId: studySession.body.id,
+      answer: "Independent study answer",
+      review: { action: "final", examinerMessage: finalReview.examinerMessage },
+    });
+
+    const detail = await request(app).get(`/api/history/exams/${runId}`);
+    expect(detail.status).toBe(200);
+    expect(detail.body.summary).toMatchObject({ runId, averageScore: 84, totalXp: 40 });
+    expect(detail.body.items).toEqual([
+      expect.objectContaining({
+        position: 1,
+        questionId: "q-1",
+        questionTitle: "Question 1",
+        officialText: "Official question 1",
+        answer: "First exam answer",
+        baseScore: 84,
+        xp: 20,
+        review: expect.objectContaining({ action: "final", examinerMessage: finalReview.examinerMessage }),
+      }),
+      expect.objectContaining({
+        position: 2,
+        questionId: "q-2",
+        questionTitle: "Question 2",
+        answer: "Second exam answer",
+      }),
+    ]);
+  });
+
+  it("deletes an active exam run with all linked session data", async () => {
+    const multiQuestionExam: ExamPackage = {
+      ...exam,
+      questions: [
+        exam.questions[0],
+        { ...exam.questions[0], id: "q-2", officialNumber: 2, displayText: "Question 2" },
+      ],
+    };
+    const app = createApp({
+      database,
+      exams: [multiQuestionExam],
+      aiProvider: new SequenceProvider([finalReview]),
+      random: () => 0,
+    });
+    const created = await request(app).post("/api/exam-runs").send({
+      examId: "exam",
+      profileId: "neutral",
+      questionCount: 2,
+    });
+    const runId = created.body.run.id as string;
+    const firstSessionId = created.body.session.id as string;
+    await request(app)
+      .post(`/api/sessions/${firstSessionId}/review`)
+      .send({ answer: "Completed first answer" });
+    const next = await request(app).post(`/api/exam-runs/${runId}/next`);
+    const secondSessionId = next.body.session.id as string;
+
+    const cancelled = await request(app).delete(`/api/exam-runs/${runId}`);
+
+    expect(cancelled.status).toBe(204);
+    expect(database.prepare("SELECT COUNT(*) AS count FROM exam_runs WHERE id = ?").get(runId))
+      .toEqual({ count: 0 });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM sessions WHERE id IN (?, ?)").get(firstSessionId, secondSessionId))
+      .toEqual({ count: 0 });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM attempts WHERE session_id = ?").get(firstSessionId))
+      .toEqual({ count: 0 });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM reviews WHERE session_id = ?").get(firstSessionId))
+      .toEqual({ count: 0 });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM messages WHERE session_id = ?").get(firstSessionId))
+      .toEqual({ count: 0 });
+  });
+
+  it("rejects deletion of a completed exam run", async () => {
+    const app = createApp({
+      database,
+      exams: [exam],
+      aiProvider: new SequenceProvider([finalReview]),
+    });
+    const created = await request(app).post("/api/exam-runs").send({
+      examId: "exam",
+      profileId: "neutral",
+      questionCount: 1,
+    });
+    const runId = created.body.run.id as string;
+    await request(app)
+      .post(`/api/sessions/${created.body.session.id}/review`)
+      .send({ answer: "Completed answer" });
+
+    const rejected = await request(app).delete(`/api/exam-runs/${runId}`);
+
+    expect(rejected.status).toBe(409);
+    expect(database.prepare("SELECT status FROM exam_runs WHERE id = ?").get(runId))
+      .toEqual({ status: "completed" });
+  });
+
   it("supports exam discovery, notes, bookmarks, sessions, review, and history", async () => {
     const provider = new SequenceProvider([finalReview]);
     const app = createApp({ database, exams: [exam], aiProvider: provider });
@@ -289,9 +582,9 @@ describe("exam API", () => {
     expect(review.body.baseScore).toBe(84);
     expect(review.body.xp).toBe(20);
     const history = await request(app).get("/api/history");
-    expect(history.body.attempts).toHaveLength(1);
-    expect(history.body.attempts[0].baseScore).toBe(84);
-    expect(history.body.attempts[0].questionTitle).toBe("What is a transaction?");
+    expect(history.body.studyAttempts).toHaveLength(1);
+    expect(history.body.studyAttempts[0].baseScore).toBe(84);
+    expect(history.body.studyAttempts[0].questionTitle).toBe("What is a transaction?");
   });
 
   it("returns document metadata without the full document unless a page is requested", async () => {
@@ -440,9 +733,8 @@ describe("exam API", () => {
     await request(app).post(`/api/sessions/${sessionId}/review`).send({ answer: "Second" });
     const history = await request(app).get("/api/history");
 
-    expect(history.body.attempts).toHaveLength(1);
-    expect(history.body.reviews).toHaveLength(1);
-    expect(history.body.reviews[0].action).toBe("final");
+    expect(history.body.studyAttempts).toHaveLength(1);
+    expect(history.body.studyAttempts[0].review.action).toBe("final");
   });
 
   it("rejects another review after a session has completed", async () => {

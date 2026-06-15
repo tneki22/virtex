@@ -11,15 +11,27 @@ describe("resolveRuntimeConfig", () => {
     });
 
     expect(config.databasePath).toMatch(/private-data[\\/]virtex\.sqlite$/);
-    expect(config.ai?.baseUrl).toBe("https://openrouter.ai/api/v1");
-    expect(config.ai?.model).toBe("openai/gpt-5-mini");
+    expect(config.aiEnvironment.openrouter).toEqual({
+      apiKey: "secret",
+      baseUrl: "https://openrouter.ai/api/v1",
+      textModel: "openai/gpt-5-mini",
+      speechModel: "openai/whisper-large-v3",
+    });
   });
 
-  it("configures Groq speech independently from answer checking", () => {
-    expect(resolveRuntimeConfig("C:/project", { GROQ_API_KEY: " key " }).speech).toEqual({
+  it("configures Groq text and speech independently", () => {
+    expect(resolveRuntimeConfig("C:/project", { GROQ_API_KEY: " key " }).aiEnvironment.groq).toEqual({
       apiKey: "key",
       baseUrl: "https://api.groq.com/openai/v1",
-      model: "whisper-large-v3-turbo",
+      textModel: "openai/gpt-oss-20b",
+      speechModel: "whisper-large-v3-turbo",
     });
+  });
+
+  it("accepts the explicit OpenRouter key name before the legacy OpenAI-compatible name", () => {
+    expect(resolveRuntimeConfig("C:/project", {
+      OPENROUTER_API_KEY: "openrouter",
+      OPENAI_API_KEY: "legacy",
+    }).aiEnvironment.openrouter.apiKey).toBe("openrouter");
   });
 });

@@ -170,3 +170,21 @@ export function completeRunItem(
   });
   return transaction();
 }
+
+export function cancelExamRun(database: Database.Database, runId: string): boolean {
+  const transaction = database.transaction(() => {
+    const run = database.prepare("SELECT status FROM exam_runs WHERE id = ?").get(runId) as
+      | { status: "active" | "completed" }
+      | undefined;
+    if (!run) return false;
+    if (run.status !== "active") {
+      throw Object.assign(new Error("Completed exam runs cannot be cancelled"), { status: 409 });
+    }
+
+    database.prepare("UPDATE exam_run_items SET session_id = NULL WHERE run_id = ?").run(runId);
+    database.prepare("DELETE FROM sessions WHERE exam_run_id = ?").run(runId);
+    database.prepare("DELETE FROM exam_runs WHERE id = ?").run(runId);
+    return true;
+  });
+  return transaction();
+}

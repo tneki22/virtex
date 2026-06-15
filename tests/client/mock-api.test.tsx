@@ -34,4 +34,39 @@ describe("MockExamApi study chat persistence", () => {
 
     expect((await new MockExamApi(0).reviewChat(chat.id, "Третье уточнение")).action).toBe("final");
   });
+
+  it("groups completed exams, keeps study attempts separate, and cancels active runs", async () => {
+    const api = new MockExamApi(0);
+    const study = await api.createSession({
+      examId: "mock-database",
+      questionId: "q-1",
+      mode: "study",
+      profileId: "mentor",
+    });
+    await api.review(study.id, "Достаточно длинный учебный ответ, который сразу получает итоговую оценку и сохраняется отдельно.");
+
+    const completed = await api.createExamRun({
+      examId: "mock-database",
+      profileId: "mentor",
+      questionCount: 1,
+    });
+    await api.review(completed.session!.id, "Достаточно длинный экзаменационный ответ, который сразу получает итоговую оценку.");
+
+    const history = await api.getHistory();
+    expect(history.examRuns).toHaveLength(1);
+    expect(history.studyAttempts).toHaveLength(1);
+    expect((await api.getExamHistory(completed.run.id)).items[0]).toMatchObject({
+      answer: expect.stringContaining("экзаменационный"),
+      review: { action: "final" },
+    });
+
+    const active = await api.createExamRun({
+      examId: "mock-database",
+      profileId: "mentor",
+      questionCount: 2,
+    });
+    await api.cancelExamRun(active.run.id);
+    await expect(api.getExamRun(active.run.id)).rejects.toThrow("Exam run not found");
+    expect((await api.getHistory()).examRuns).toHaveLength(1);
+  });
 });

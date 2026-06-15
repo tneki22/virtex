@@ -1,15 +1,21 @@
 import {
-  ArrowLeft,
   Bookmark,
   BookmarkCheck,
   CheckCircle2,
+  ChevronLeft,
   ChevronRight,
   ClipboardCheck,
   History,
   BookOpen,
+  Home,
+  LogOut,
+  Maximize2,
   Menu,
   MessageSquare,
   Mic,
+  Minimize2,
+  PanelLeftClose,
+  PanelLeftOpen,
   PanelRightOpen,
   Plus,
   Search,
@@ -28,7 +34,6 @@ import type {
   SessionKind,
   StudyChatDetail,
   StudyChatSummary,
-  StudyMode,
   StudySession,
 } from "../../../shared/contracts.js";
 import { assertExamQuestionCount } from "../../../shared/exam-run.js";
@@ -37,12 +42,14 @@ import { normalizeStudyMode } from "../../../shared/study-mode.js";
 import type { ExamApi, ExamDetail, QuestionDetail, ReviewResponse } from "../api.js";
 import { api as defaultApi } from "../api.js";
 import { ErrorState, LoadingState } from "../components/AppShell.js";
+import { ConfirmDialog } from "../components/ConfirmDialog.js";
 import { ExaminerProfilePicker } from "../components/ExaminerProfilePicker.js";
 import { ExamRunSummary } from "../components/ExamRunSummary.js";
 import { PanelResizeHandle } from "../components/PanelResizeHandle.js";
 import { ProgressiveText } from "../components/ProgressiveText.js";
 import { MIN_LEFT, MIN_RIGHT, usePanelLayout } from "../hooks/usePanelLayout.js";
 import { useVoiceInput } from "../hooks/useVoiceInput.js";
+import { clearExamRunDrafts } from "../exam-drafts.js";
 
 type RightTab = "answers" | "notes";
 type DialogueTurn = {
@@ -51,17 +58,25 @@ type DialogueTurn = {
   text: string;
 };
 
-const modeLabels: Record<StudyMode, string> = {
-  study: "Изучение",
-  exam: "Экзамен",
-};
-
 const readinessLabels = {
   not_started: "Не начат",
   review: "Повторить",
   almost_ready: "Почти готов",
   ready: "Готов",
 };
+
+function formatTopicCount(count: number) {
+  const lastTwoDigits = count % 100;
+  const lastDigit = count % 10;
+  const label = lastTwoDigits >= 11 && lastTwoDigits <= 14
+    ? "тем"
+    : lastDigit === 1
+      ? "тема"
+      : lastDigit >= 2 && lastDigit <= 4
+        ? "темы"
+        : "тем";
+  return `${count} ${label}`;
+}
 
 export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
   const { examId = "", questionId: routeQuestionId = "" } = useParams();
@@ -84,7 +99,10 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
   const [error, setError] = useState("");
   const [leftOpen, setLeftOpen] = useState(false);
   const [rightOpen, setRightOpen] = useState(false);
+  const [leftCollapsed, setLeftCollapsed] = useState(false);
+  const [rightFullscreen, setRightFullscreen] = useState(false);
   const searchInput = useRef<HTMLInputElement>(null);
+  const preserveQuestionWhileLoading = useRef(false);
   const panelLayout = usePanelLayout();
   const runId = searchParams.get("run");
   const questionCount = useMemo<ExamQuestionCount>(() => {
@@ -97,6 +115,9 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
   const [examRun, setExamRun] = useState<ExamRun | null>(null);
   const [examSummary, setExamSummary] = useState<ExamRunSummaryData | null>(null);
   const [loadingRun, setLoadingRun] = useState(false);
+  const [exitDialogOpen, setExitDialogOpen] = useState(false);
+  const [cancellingRun, setCancellingRun] = useState(false);
+  const [cancelError, setCancelError] = useState("");
   const [chatHistory, setChatHistory] = useState<StudyChatSummary[]>([]);
   const [activeChat, setActiveChat] = useState<StudyChatDetail | null>(null);
   const [chatHistoryOpen, setChatHistoryOpen] = useState(false);
@@ -150,7 +171,11 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
 
   useEffect(() => {
     if (!selectedQuestionId || selectedQuestionId === "random") return;
-    setQuestion(null);
+    if (preserveQuestionWhileLoading.current) {
+      preserveQuestionWhileLoading.current = false;
+    } else {
+      setQuestion(null);
+    }
     setReview(null);
     setDialogueTurns([]);
     setCompleted(false);
@@ -228,6 +253,31 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
         String(item.officialNumber).includes(normalized),
     );
   }, [exam, search]);
+  const topicCount = useMemo(
+    () => new Set(filteredQuestions.map((item) => item.groupTitle)).size,
+    [filteredQuestions],
+  );
+  const currentQuestionIndex = useMemo(
+    () => exam?.questions.findIndex((item) => item.id === question?.id) ?? -1,
+    [exam, question?.id],
+  );
+
+  useEffect(() => {
+    if (!rightFullscreen) return;
+    const closeFullscreen = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setRightFullscreen(false);
+    };
+    window.addEventListener("keydown", closeFullscreen);
+    return () => window.removeEventListener("keydown", closeFullscreen);
+  }, [rightFullscreen]);
+
+  useEffect(() => {
+    const expandForNarrowViewport = () => {
+      if (window.innerWidth <= 1100) setLeftCollapsed(false);
+    };
+    window.addEventListener("resize", expandForNarrowViewport);
+    return () => window.removeEventListener("resize", expandForNarrowViewport);
+  }, []);
 
   async function ensureSession(): Promise<StudySession> {
     if (session && session.questionId === question?.id) return session;
@@ -426,6 +476,13 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
     navigate(`/exams/${examId}/workspace/${id}?mode=${mode}`);
   }
 
+  function selectAdjacentQuestion(offset: -1 | 1) {
+    const target = exam?.questions[currentQuestionIndex + offset];
+    if (!target || mode !== "study") return;
+    preserveQuestionWhileLoading.current = true;
+    selectQuestion(target.id);
+  }
+
   async function toggleBookmark() {
     if (!question) return;
     const result = await api.updateBookmark(question.id, !question.bookmarked);
@@ -490,15 +547,27 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
     }
   }
 
+  async function cancelActiveExam() {
+    if (!examRun || cancellingRun) return;
+    setCancellingRun(true);
+    setCancelError("");
+    try {
+      await api.cancelExamRun(examRun.id);
+      clearExamRunDrafts(examId, examRun.id);
+      navigate(`/exams/${examId}`, { replace: true });
+    } catch (reason) {
+      setCancelError(reason instanceof Error ? reason.message : "Не удалось прервать экзамен");
+    } finally {
+      setCancellingRun(false);
+    }
+  }
+
   if (error && !exam) return <ErrorState message={error} />;
   if (!exam) return <LoadingState label="Открываем рабочее пространство" />;
   if (mode === "exam" && routeQuestionId === "random") {
     return (
       <div className="workspace-page exam-setup-page">
-        <header className="workspace-header">
-          <Link to={`/exams/${exam.id}`} className="workspace-brand"><ArrowLeft size={17} /> Virtex</Link>
-          <div className="workspace-title"><span>{exam.title}</span><ChevronRight size={14} /><strong>Экзамен</strong></div>
-        </header>
+        <Link to={`/exams/${exam.id}`} className="workspace-home-corner" aria-label="В меню"><Home size={18} /></Link>
         <main className="exam-setup-card">
           <p className="eyebrow">{questionCount} {questionCount === 1 ? "вопрос" : "вопроса"}</p>
           <h1>Настройка экзамена</h1>
@@ -519,10 +588,7 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
   if (examSummary) {
     return (
       <div className="workspace-page exam-summary-page">
-        <header className="workspace-header">
-          <Link to={`/exams/${exam.id}`} className="workspace-brand"><ArrowLeft size={17} /> Virtex</Link>
-          <div className="workspace-title"><span>{exam.title}</span><ChevronRight size={14} /><strong>Итоги</strong></div>
-        </header>
+        <Link to={`/exams/${exam.id}`} className="workspace-home-corner" aria-label="В меню"><Home size={18} /></Link>
         <main><ExamRunSummary examId={exam.id} summary={examSummary} questions={exam.questions} /></main>
       </div>
     );
@@ -532,51 +598,56 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
 
   return (
     <div className="workspace-page">
-      <header className="workspace-header">
-        <Link to={`/exams/${exam.id}`} className="workspace-brand"><ArrowLeft size={17} /> Virtex</Link>
-        <div className="workspace-title">
-          <span>{exam.title}</span>
-          <ChevronRight size={14} />
-          <strong>{modeLabels[mode]}</strong>
-        </div>
-        <div className="workspace-tools">
-          {mode === "study" && <button className="icon-button tablet-only" onClick={() => setLeftOpen(true)} aria-label="Открыть список вопросов"><Menu size={19} /></button>}
-          <button className="icon-button tablet-only" onClick={() => setRightOpen(true)} aria-label="Открыть ответы и заметки"><PanelRightOpen size={19} /></button>
-        </div>
-      </header>
-
+      {mode === "exam" && examRun?.status === "active" && (
+        <button className="exam-exit-button" onClick={() => { setCancelError(""); setExitDialogOpen(true); }}>
+          <LogOut size={16} /> Выйти
+        </button>
+      )}
       <div
-        className={`workspace-grid ${mode === "exam" ? "workspace-grid-exam" : ""}`}
+        className={`workspace-grid ${mode === "exam" ? "workspace-grid-exam" : ""} ${leftCollapsed ? "is-left-collapsed" : ""}`}
         style={{
           "--left-panel": `${panelLayout.layout.left}px`,
           "--right-panel": `${panelLayout.layout.right}px`,
         } as CSSProperties}
       >
-        {mode === "study" && <aside className={`question-panel ${leftOpen ? "is-open" : ""}`} aria-label="Навигация по вопросам">
-          <div className="panel-mobile-head"><strong>Вопросы</strong><button className="icon-button" onClick={() => setLeftOpen(false)} aria-label="Закрыть список"><X size={18} /></button></div>
-          <div className="question-search">
-            <Search size={16} />
-            <input ref={searchInput} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Номер или тема" aria-label="Поиск вопросов" />
-            <kbd>/</kbd>
-          </div>
-          <div className="question-panel-caption">
-            <span>{filteredQuestions.length} вопросов</span>
-            <span>ручной выбор</span>
-          </div>
-          <div className="question-list">
-            {filteredQuestions.map((item) => (
-              <button
-                key={item.id}
-                className={`question-list-item ${item.id === question.id ? "is-active" : ""}`}
-                onClick={() => selectQuestion(item.id)}
-                aria-label={`Вопрос ${item.officialNumber}: ${item.displayText}`}
-              >
-                <span className="question-number">{String(item.officialNumber).padStart(2, "0")}</span>
-                <span><strong>Вопрос {item.officialNumber}</strong><small>{item.groupTitle.replace(/^Модуль [A-ZА-Я]:\s*/u, "")}</small></span>
-                <span className="question-state" />
-              </button>
-            ))}
-          </div>
+        {mode === "study" && <aside id="question-panel" className={`question-panel ${leftOpen ? "is-open" : ""} ${leftCollapsed ? "is-collapsed" : ""}`} aria-label="Навигация по вопросам">
+          {leftCollapsed ? (
+            <div className="collapsed-panel-actions">
+              <Link to={`/exams/${exam.id}`} className="icon-button" aria-label="В меню"><Home size={18} /></Link>
+              <button className="icon-button" onClick={() => setLeftCollapsed(false)} aria-label="Развернуть список вопросов"><PanelLeftOpen size={18} /></button>
+            </div>
+          ) : (
+            <>
+              <div className="panel-mobile-head"><strong>Вопросы</strong><button className="icon-button" onClick={() => setLeftOpen(false)} aria-label="Закрыть список"><X size={18} /></button></div>
+              <div className="question-panel-toolbar">
+                <Link to={`/exams/${exam.id}`} className="icon-button" aria-label="В меню"><Home size={17} /></Link>
+                <div className="question-search">
+                  <Search size={16} />
+                  <input ref={searchInput} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Номер или тема" aria-label="Поиск вопросов" />
+                  <kbd>/</kbd>
+                </div>
+                <button className="icon-button desktop-panel-control" onClick={() => setLeftCollapsed(true)} aria-label="Свернуть список вопросов"><PanelLeftClose size={17} /></button>
+              </div>
+              <div className="question-panel-caption">
+                <span>{filteredQuestions.length} вопросов</span>
+                <span>{formatTopicCount(topicCount)}</span>
+              </div>
+              <div className="question-list">
+                {filteredQuestions.map((item) => (
+                  <button
+                    key={item.id}
+                    className={`question-list-item ${item.id === question.id ? "is-active" : ""}`}
+                    onClick={() => selectQuestion(item.id)}
+                    aria-label={`${item.officialNumber}. ${item.displayText}`}
+                  >
+                    <span className="question-number">{String(item.officialNumber).padStart(2, "0")}</span>
+                    <span className="question-list-copy"><strong>{item.displayText}</strong><small>{item.groupTitle.replace(/^Модуль [A-ZА-Я]:\s*/u, "")}</small></span>
+                    <span className="question-state" />
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
         </aside>}
 
         {mode === "study" && <PanelResizeHandle
@@ -590,6 +661,11 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
         />}
 
         <main className="answer-panel">
+          <div className="workspace-mobile-tools tablet-only">
+            {mode === "study" && <Link to={`/exams/${exam.id}`} className="icon-button" aria-label="В меню"><Home size={18} /></Link>}
+            {mode === "study" && <button className="icon-button" onClick={() => setLeftOpen(true)} aria-label="Открыть список вопросов" aria-controls="question-panel" aria-expanded={leftOpen}><Menu size={19} /></button>}
+            <button className="icon-button" onClick={() => setRightOpen(true)} aria-label="Открыть ответы и заметки" aria-controls="reference-panel" aria-expanded={rightOpen || rightFullscreen}><PanelRightOpen size={19} /></button>
+          </div>
           <div className="question-heading-row">
             <div>
               <p className="eyebrow">Вопрос {question.officialNumber} · {question.groupTitle}</p>
@@ -598,7 +674,7 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
                 <details className="official-wording"><summary>Официальная формулировка</summary><p>{question.officialText}</p></details>
               )}
             </div>
-            <button className="icon-button bookmark-button" onClick={() => void toggleBookmark()} aria-label={question.bookmarked ? "Убрать из закладок" : "Добавить в закладки"}>
+            <button className="icon-button bookmark-button" onClick={() => void toggleBookmark()} aria-label={question.bookmarked ? "Убрать из закладок" : "Добавить в закладки"} aria-pressed={question.bookmarked}>
               {question.bookmarked ? <BookmarkCheck size={21} /> : <Bookmark size={21} />}
             </button>
           </div>
@@ -624,11 +700,17 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
                 {activeProfile && activeChat && <span className="chat-profile">{activeProfile.name}</span>}
               </div>
               <div className="chat-actions">
-                <button className="secondary-button" disabled={chatHistory.length === 0} onClick={() => setChatHistoryOpen((value) => !value)}><History size={15} /> История</button>
+                <button
+                  className="secondary-button"
+                  disabled={chatHistory.length === 0}
+                  aria-expanded={chatHistoryOpen}
+                  aria-controls="chat-history-popover"
+                  onClick={() => setChatHistoryOpen((value) => !value)}
+                ><History size={15} /> История</button>
                 <button className="primary-button" onClick={() => { setNewChatOpen(true); setNewChatKind(null); setChatHistoryOpen(false); }}><Plus size={15} /> Новый чат</button>
               </div>
               {chatHistoryOpen && (
-                <div className="chat-history-popover">
+                <div id="chat-history-popover" className="chat-history-popover" role="region" aria-label="История чатов">
                   {chatHistory.map((chat) => (
                     <button key={chat.id} className={chat.id === activeChat?.id ? "is-active" : ""} onClick={() => void openChat(chat.id)}>
                       <span>{chat.kind === "tutor" ? "Разбор" : "Оценка"}</span>
@@ -760,19 +842,50 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
           onReset={panelLayout.reset}
         />
 
-        <aside className={`reference-panel ${rightOpen ? "is-open" : ""}`} aria-label="Ответы и заметки">
-          <div className="panel-mobile-head"><strong>Ответы и заметки</strong><button className="icon-button" onClick={() => setRightOpen(false)} aria-label="Закрыть панель"><X size={18} /></button></div>
-          <div className="reference-tabs" role="tablist">
-            <button role="tab" aria-selected={rightTab === "answers"} disabled={answersLocked} onClick={() => setRightTab("answers")}>Ответы</button>
-            <button role="tab" aria-selected={rightTab === "notes"} onClick={() => setRightTab("notes")}>Заметки</button>
+        <aside id="reference-panel" className={`reference-panel ${rightOpen ? "is-open" : ""} ${rightFullscreen ? "is-fullscreen" : ""}`} aria-label="Ответы и заметки">
+          <div className="panel-mobile-head"><strong>Ответы и заметки</strong><button className="icon-button" onClick={() => { setRightOpen(false); setRightFullscreen(false); }} aria-label="Закрыть панель"><X size={18} /></button></div>
+          <div className="reference-toolbar">
+            <div className="reference-tabs" role="tablist">
+              <button id="answers-tab" role="tab" aria-controls="reference-tabpanel" aria-selected={rightTab === "answers"} tabIndex={rightTab === "answers" ? 0 : -1} disabled={answersLocked} onClick={() => setRightTab("answers")}>Ответы</button>
+              <button id="notes-tab" role="tab" aria-controls="reference-tabpanel" aria-selected={rightTab === "notes"} tabIndex={rightTab === "notes" ? 0 : -1} onClick={() => setRightTab("notes")}>Заметки</button>
+            </div>
+            {rightFullscreen && mode === "study" && (
+              <nav className="reference-question-navigation" aria-label="Навигация между вопросами">
+                <button
+                  className="icon-button"
+                  disabled={currentQuestionIndex <= 0}
+                  onClick={() => selectAdjacentQuestion(-1)}
+                  aria-label="Предыдущий вопрос"
+                >
+                  <ChevronLeft size={18} />
+                </button>
+                <span>{currentQuestionIndex + 1} из {exam.questions.length}</span>
+                <button
+                  className="icon-button"
+                  disabled={currentQuestionIndex < 0 || currentQuestionIndex >= exam.questions.length - 1}
+                  onClick={() => selectAdjacentQuestion(1)}
+                  aria-label="Следующий вопрос"
+                >
+                  <ChevronRight size={18} />
+                </button>
+              </nav>
+            )}
+            <button
+              className="icon-button reference-expand-button"
+              onClick={() => { setRightFullscreen((value) => !value); setRightOpen(false); }}
+              aria-label={rightFullscreen ? "Вернуть документ в панель" : "Развернуть документ на весь экран"}
+              aria-pressed={rightFullscreen}
+            >
+              {rightFullscreen ? <Minimize2 size={17} /> : <Maximize2 size={17} />}
+            </button>
           </div>
-          <div className="reference-content">
+          <div id="reference-tabpanel" className="reference-content" role="tabpanel" aria-labelledby={rightTab === "answers" ? "answers-tab" : "notes-tab"}>
             {rightTab === "answers" && (
               answersLocked ? (
                 <div className="locked-state"><MessageSquare size={24} /><h2>Ответы закрыты</h2><p>Эталон станет доступен после итоговой проверки текущего вопроса.</p></div>
               ) : (
                 <div className="reference-answer">
-                  <h2>Опорный ответ</h2>
+                  <h2>{question.displayText}</h2>
                   <div className="reference-copy">
                     {question.referenceAnswer
                       .split(/\n{2,}|(?<=\.)\s+(?=\d+\.)/u)
@@ -788,7 +901,19 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
           </div>
         </aside>
       </div>
-      {((mode === "study" && leftOpen) || rightOpen) && <button className="panel-backdrop tablet-only" aria-label="Закрыть панель" onClick={() => { setLeftOpen(false); setRightOpen(false); }} />}
+      {!rightFullscreen && ((mode === "study" && leftOpen) || rightOpen) && <button className="panel-backdrop tablet-only" aria-label="Закрыть панель" onClick={() => { setLeftOpen(false); setRightOpen(false); }} />}
+      {exitDialogOpen && (
+        <ConfirmDialog
+          title="Прервать экзамен?"
+          description="Текущая серия, ответы и черновики будут удалены без возможности восстановления."
+          cancelLabel="Остаться"
+          confirmLabel="Прервать экзамен"
+          error={cancelError}
+          busy={cancellingRun}
+          onCancel={() => setExitDialogOpen(false)}
+          onConfirm={() => void cancelActiveExam()}
+        />
+      )}
     </div>
   );
 }

@@ -3,11 +3,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { createApp } from "./app.js";
-import { OpenAICompatibleProvider } from "./ai.js";
 import { loadEnvironmentFiles, resolveRuntimeConfig } from "./config.js";
 import { loadExamPackages } from "./content.js";
 import { createDatabase } from "./database.js";
-import { GroqTranscriptionProvider } from "./transcription.js";
+import { RuntimeAIService } from "./runtime-ai.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 loadEnvironmentFiles(root);
@@ -16,22 +15,12 @@ await mkdir(path.dirname(config.databasePath), { recursive: true });
 
 const exams = await loadExamPackages(path.join(root, "content", "exams"));
 const database = createDatabase(config.databasePath);
-const aiProvider = config.ai
-  ? new OpenAICompatibleProvider({
-      apiKey: config.ai.apiKey,
-      baseUrl: config.ai.baseUrl,
-      model: config.ai.model,
-    })
-  : null;
-const speechProvider = config.speech
-  ? new GroqTranscriptionProvider({
-      apiKey: config.speech.apiKey,
-      baseUrl: config.speech.baseUrl,
-      model: config.speech.model,
-    })
-  : null;
+const runtimeAI = new RuntimeAIService({
+  database,
+  environment: config.aiEnvironment,
+});
 
-const app = createApp({ database, exams, aiProvider, speechProvider });
+const app = createApp({ database, exams, runtimeAI });
 const clientDirectory = path.join(root, "dist", "client");
 try {
   await access(clientDirectory);
@@ -45,7 +34,8 @@ try {
 }
 
 app.listen(config.port, "127.0.0.1", () => {
+  const aiState = runtimeAI.getState();
   console.log(
-    `Virtex API listening on http://127.0.0.1:${config.port} (${exams.length} exam package${exams.length === 1 ? "" : "s"}, AI ${aiProvider ? `on: ${aiProvider.model}` : "off"}, speech ${speechProvider ? `on: ${speechProvider.model}` : "off"})`,
+    `Virtex API listening on http://127.0.0.1:${config.port} (${exams.length} exam package${exams.length === 1 ? "" : "s"}, AI ${aiState.text.available ? `on: ${aiState.text.provider}/${aiState.text.model}` : "off"}, speech ${aiState.speech.available ? `on: ${aiState.speech.provider}/${aiState.speech.model}` : "off"})`,
   );
 });

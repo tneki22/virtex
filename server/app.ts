@@ -5,10 +5,14 @@ import multer from "multer";
 import { z } from "zod";
 import type {
   AIReview,
+  ExamHistoryDetail,
+  ExamHistorySummary,
   ExamPackage,
   ExamQuestion,
+  HistoryData,
   SessionKind,
   SessionMessage,
+  StudyAttemptHistoryEntry,
   StudySession,
 } from "../shared/contracts.js";
 import { calculateExamRunSummary, selectQuestionIds } from "../shared/exam-run.js";
@@ -24,6 +28,7 @@ import { guardInstructionOnlyAnswer } from "./answer-guard.js";
 import {
   activateNextRunItem,
   attachSessionToRunItem,
+  cancelExamRun,
   completeRunItem,
   createExamRun,
   getExamRun,
@@ -35,11 +40,13 @@ import {
   REVIEW_SCHEMA_VERSION,
 } from "./prompt.js";
 import type { SpeechTranscriptionProvider } from "./transcription.js";
+import type { RuntimeAIService } from "./runtime-ai.js";
 
 interface CreateAppOptions {
   database: Database.Database;
   exams: ExamPackage[];
-  aiProvider: AIProvider | null;
+  runtimeAI?: RuntimeAIService;
+  aiProvider?: AIProvider | null;
   speechProvider?: SpeechTranscriptionProvider | null;
   now?: () => Date;
   random?: () => number;
@@ -121,10 +128,18 @@ function validateProviderResponse(
 
 export function createApp(options: CreateAppOptions) {
   const app = express();
-  const { database, aiProvider, speechProvider = null } = options;
+  const { database } = options;
   const now = options.now ?? (() => new Date());
   const random = options.random ?? Math.random;
   const examMap = new Map(options.exams.map((exam) => [exam.id, exam]));
+
+  function currentAIProvider() {
+    return options.runtimeAI?.getTextProvider() ?? options.aiProvider ?? null;
+  }
+
+  function currentSpeechProvider() {
+    return options.runtimeAI?.getSpeechProvider() ?? options.speechProvider ?? null;
+  }
 
   app.use(express.json({ limit: "1mb" }));
   const upload = multer({
@@ -467,6 +482,12 @@ export function createApp(options: CreateAppOptions) {
     response.json({ run, ...(session ? { session } : {}) });
   });
 
+  app.delete("/api/exam-runs/:id", (request, response) => {
+    const deleted = cancelExamRun(database, request.params.id);
+    if (!deleted) return response.status(404).json({ error: "Exam run not found" });
+    response.status(204).end();
+  });
+
   app.post("/api/exam-runs/:id/next", (request, response) => {
     let run = getExamRun(database, request.params.id);
     if (!run) return response.status(404).json({ error: "Exam run not found" });
@@ -497,6 +518,7 @@ export function createApp(options: CreateAppOptions) {
   });
 
   app.post("/api/transcriptions", (request, response, next) => {
+    const speechProvider = currentSpeechProvider();
     if (!speechProvider) {
       return response.status(503).json({ error: "Voice transcription is not configured" });
     }
@@ -520,7 +542,8 @@ export function createApp(options: CreateAppOptions) {
             mimeType: request.file.mimetype,
             prompt,
           });
-          response.json(result);
+          const provider = options.runtimeAI?.getState().speech.provider;
+          response.json({ ...result, ...(provider && provider !== "disabled" ? { provider } : {}) });
         } catch {
           response.status(502).json({ error: "Voice transcription failed" });
         }
@@ -617,6 +640,7 @@ export function createApp(options: CreateAppOptions) {
     const question = exam?.questions.find((item) => item.id === session.question_id);
     const profile = exam?.profiles.find((item) => item.id === session.profile_id);
     if (!exam || !question || !profile) return response.status(409).json({ error: "Chat content is unavailable" });
+    const aiProvider = currentAIProvider();
     if (!aiProvider) return response.status(503).json({ error: "AI tutor is not configured" });
     let assistantContent: string;
     try {
@@ -661,6 +685,7 @@ export function createApp(options: CreateAppOptions) {
     }
     const dialogue = messagesForSession(session.id);
 
+    const aiProvider = currentAIProvider();
     if (!aiProvider) {
       throw Object.assign(new Error("AI review is not configured"), { status: 503 });
     }
@@ -779,45 +804,180 @@ export function createApp(options: CreateAppOptions) {
     response.json({ questionId: request.params.id, bookmarked });
   });
 
+  function examHistorySummary(runId: string): ExamHistorySummary | undefined {
+    const row = database.prepare(`
+      SELECT exam_runs.id, exam_runs.exam_id, exam_runs.question_count, exam_runs.completed_at,
+        AVG(exam_run_items.base_score) AS average_score,
+        COALESCE(SUM(exam_run_items.xp), 0) AS total_xp
+      FROM exam_runs
+      JOIN exam_run_items ON exam_run_items.run_id = exam_runs.id
+      WHERE exam_runs.id = ? AND exam_runs.status = 'completed'
+      GROUP BY exam_runs.id
+    `).get(runId) as {
+      id: string;
+      exam_id: string;
+      question_count: number;
+      completed_at: string;
+      average_score: number | null;
+      total_xp: number;
+    } | undefined;
+    if (!row) return undefined;
+    const exam = examMap.get(row.exam_id);
+    if (!exam) return undefined;
+    return {
+      runId: row.id,
+      examId: row.exam_id,
+      examTitle: exam.title,
+      questionCount: row.question_count,
+      ...(row.average_score === null ? {} : { averageScore: row.average_score }),
+      totalXp: row.total_xp,
+      completedAt: row.completed_at,
+    };
+  }
+
   app.get("/api/history", (_request, response) => {
+    const completedRuns = database.prepare(`
+      SELECT id FROM exam_runs
+      WHERE status = 'completed'
+      ORDER BY completed_at DESC, rowid DESC
+    `).all() as Array<{ id: string }>;
+    const examRuns = completedRuns
+      .map((run) => examHistorySummary(run.id))
+      .filter((run): run is ExamHistorySummary => Boolean(run));
+
     const rows = database
       .prepare(
         `SELECT attempts.*, reviews.payload_json
          FROM attempts
          JOIN reviews ON reviews.attempt_id = attempts.id
+         JOIN sessions ON sessions.id = attempts.session_id
+         WHERE sessions.exam_run_id IS NULL
          ORDER BY attempts.created_at DESC, attempts.rowid DESC`,
       )
       .all() as Array<Record<string, unknown>>;
-    const attempts = rows.map((item) => {
-        const locatedQuestion = findQuestion(String(item.question_id));
-        return {
-          id: item.id,
-          sessionId: item.session_id,
-          questionId: item.question_id,
-          examId: locatedQuestion.exam.id,
-          questionTitle: locatedQuestion.question.displayText,
-          answer: item.answer,
-          baseScore: item.base_score ?? undefined,
-          xp: item.xp,
-          createdAt: item.created_at,
-        };
-      });
-    const reviews = rows.map((row) => JSON.parse(String(row.payload_json)));
-    response.json({ attempts, reviews });
+    const studyAttempts: StudyAttemptHistoryEntry[] = rows.map((item) => {
+      const locatedQuestion = findQuestion(String(item.question_id));
+      return {
+        id: String(item.id),
+        sessionId: String(item.session_id),
+        questionId: String(item.question_id),
+        examId: locatedQuestion.exam.id,
+        questionTitle: locatedQuestion.question.displayText,
+        answer: String(item.answer),
+        ...(item.base_score === null ? {} : { baseScore: Number(item.base_score) }),
+        xp: Number(item.xp),
+        createdAt: String(item.created_at),
+        review: JSON.parse(String(item.payload_json)) as AIReview,
+      };
+    });
+    const history: HistoryData = { examRuns, studyAttempts };
+    response.json(history);
   });
 
-  app.post("/api/settings/ai/test", async (_request, response) => {
-    if (!aiProvider) {
+  app.get("/api/history/exams/:id", (request, response) => {
+    const summary = examHistorySummary(request.params.id);
+    if (!summary) return response.status(404).json({ error: "Completed exam run not found" });
+    const exam = examMap.get(summary.examId)!;
+    const rows = database.prepare(`
+      SELECT exam_run_items.position, exam_run_items.question_id, exam_run_items.base_score,
+        exam_run_items.xp, attempts.answer, reviews.payload_json
+      FROM exam_run_items
+      JOIN sessions ON sessions.id = exam_run_items.session_id
+      JOIN attempts ON attempts.session_id = sessions.id
+      JOIN reviews ON reviews.attempt_id = attempts.id
+      WHERE exam_run_items.run_id = ?
+      ORDER BY exam_run_items.position
+    `).all(request.params.id) as Array<{
+      position: number;
+      question_id: string;
+      base_score: number | null;
+      xp: number;
+      answer: string;
+      payload_json: string;
+    }>;
+    const detail: ExamHistoryDetail = {
+      summary,
+      items: rows.map((row) => {
+        const question = exam.questions.find((item) => item.id === row.question_id)!;
+        return {
+          position: row.position,
+          questionId: row.question_id,
+          questionTitle: question.displayText,
+          officialText: question.officialText,
+          answer: row.answer,
+          ...(row.base_score === null ? {} : { baseScore: row.base_score }),
+          xp: row.xp,
+          review: JSON.parse(row.payload_json) as AIReview,
+        };
+      }),
+    };
+    response.json(detail);
+  });
+
+  app.get("/api/settings/ai", (_request, response) => {
+    if (!options.runtimeAI) {
+      return response.status(501).json({ error: "Runtime AI settings are not available" });
+    }
+    response.json(options.runtimeAI.getState());
+  });
+
+  app.put("/api/settings/ai", (request, response) => {
+    if (!options.runtimeAI) {
+      return response.status(501).json({ error: "Runtime AI settings are not available" });
+    }
+    try {
+      response.json(options.runtimeAI.update(request.body));
+    } catch (error) {
+      if (error instanceof z.ZodError) throw error;
+      response.status(400).json({
+        error: error instanceof Error ? error.message : "Invalid AI settings",
+      });
+    }
+  });
+
+  app.post("/api/settings/ai/test-text", async (_request, response) => {
+    const aiProvider = currentAIProvider();
+    const selected = options.runtimeAI?.getState().text;
+    if (!aiProvider || !selected) {
       return response.status(503).json({ ok: false, message: "AI is not configured" });
     }
     const result = await aiProvider.testConnection();
-    response.status(result.ok ? 200 : 502).json(result);
+    response.status(result.ok ? 200 : 502).json({
+      ...result,
+      provider: selected.provider,
+      model: selected.model,
+    });
   });
 
-  app.get("/api/settings/status", (_request, response) => {
-    response.json({
-      aiConfigured: Boolean(aiProvider),
-      speechConfigured: Boolean(speechProvider),
+  app.post("/api/settings/ai/test-speech", (request, response, next) => {
+    const speechProvider = currentSpeechProvider();
+    const selected = options.runtimeAI?.getState().speech;
+    if (!speechProvider || !selected || selected.provider === "disabled") {
+      return response.status(503).json({ ok: false, message: "Speech is not configured" });
+    }
+    upload.single("audio")(request, response, (error) => {
+      if (error) return next(error);
+      void (async () => {
+        if (!request.file) {
+          return response.status(400).json({ error: "A supported audio file is required" });
+        }
+        try {
+          const result = await speechProvider.transcribe({
+            buffer: request.file.buffer,
+            fileName: request.file.originalname || "test.webm",
+            mimeType: request.file.mimetype,
+            prompt: "Короткая проверка распознавания русской речи.",
+          });
+          response.json({ ok: true, provider: selected.provider, ...result });
+        } catch {
+          response.status(502).json({
+            ok: false,
+            provider: selected.provider,
+            model: selected.model,
+            message: "Voice transcription failed",
+          });
+        }
+      })().catch(next);
     });
   });
 

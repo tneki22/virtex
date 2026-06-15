@@ -1,11 +1,14 @@
 import type {
   AIReview,
+  AIConnectionTestResult,
   Attempt,
   ExamPackage,
+  ExamHistoryDetail,
   ExamQuestion,
   ExamQuestionCount,
   ExamRun,
   ExamRunStep,
+  HistoryData,
   SessionMessage,
   SessionKind,
   SourceDocument,
@@ -14,6 +17,8 @@ import type {
   StudyMode,
   StudySession,
   TutorTurnResponse,
+  RuntimeAISettings,
+  RuntimeAISettingsUpdate,
 } from "../../shared/contracts.js";
 import { calculateExamRunSummary, selectQuestionIds } from "../../shared/exam-run.js";
 
@@ -64,6 +69,7 @@ export interface ExamApi {
   }): Promise<ExamRunStep>;
   getExamRun(runId: string): Promise<ExamRunStep>;
   advanceExamRun(runId: string): Promise<ExamRunStep>;
+  cancelExamRun(runId: string): Promise<void>;
   listChats(examId: string, questionId: string): Promise<StudyChatSummary[]>;
   createChat(input: {
     examId: string;
@@ -82,9 +88,12 @@ export interface ExamApi {
     questionId: string,
     bookmarked: boolean,
   ): Promise<{ questionId: string; bookmarked: boolean }>;
-  getHistory(): Promise<{ attempts: Attempt[]; reviews: AIReview[] }>;
-  testAI(): Promise<{ ok: boolean; model?: string; message?: string }>;
-  getSettingsStatus(): Promise<{ aiConfigured: boolean; speechConfigured: boolean }>;
+  getHistory(): Promise<HistoryData>;
+  getExamHistory(runId: string): Promise<ExamHistoryDetail>;
+  getAISettings(): Promise<RuntimeAISettings>;
+  updateAISettings(input: RuntimeAISettingsUpdate): Promise<RuntimeAISettings>;
+  testAIText(): Promise<AIConnectionTestResult>;
+  testAISpeech(audio: Blob): Promise<AIConnectionTestResult & { text?: string }>;
 }
 
 async function jsonRequest<T>(url: string, init?: RequestInit): Promise<T> {
@@ -92,9 +101,22 @@ async function jsonRequest<T>(url: string, init?: RequestInit): Promise<T> {
     ...init,
     headers: { "Content-Type": "application/json", ...init?.headers },
   });
-  const body = (await response.json()) as T & { error?: string };
+  if (response.status === 204) return undefined as T;
+  const rawBody = await response.text();
+  let body: T & { error?: string };
+  try {
+    body = JSON.parse(rawBody) as T & { error?: string };
+  } catch {
+    throw new Error("Сервер API недоступен или запущена устаревшая версия");
+  }
   if (!response.ok) throw new Error(body.error ?? `Request failed with ${response.status}`);
   return body;
+}
+
+function isHistoryData(value: unknown): value is HistoryData {
+  if (!value || typeof value !== "object") return false;
+  const history = value as Partial<HistoryData>;
+  return Array.isArray(history.examRuns) && Array.isArray(history.studyAttempts);
 }
 
 export class HttpExamApi implements ExamApi {
@@ -140,6 +162,10 @@ export class HttpExamApi implements ExamApi {
       method: "POST",
       body: "{}",
     });
+  }
+
+  cancelExamRun(runId: string) {
+    return jsonRequest<void>(`/api/exam-runs/${runId}`, { method: "DELETE" });
   }
 
   listChats(examId: string, questionId: string) {
@@ -210,21 +236,44 @@ export class HttpExamApi implements ExamApi {
     );
   }
 
-  getHistory() {
-    return jsonRequest<{ attempts: Attempt[]; reviews: AIReview[] }>("/api/history");
+  async getHistory() {
+    const history = await jsonRequest<unknown>("/api/history");
+    if (!isHistoryData(history)) {
+      throw new Error("Сервер API недоступен или запущена устаревшая версия");
+    }
+    return history;
   }
 
-  testAI() {
-    return jsonRequest<{ ok: boolean; model?: string; message?: string }>(
-      "/api/settings/ai/test",
-      { method: "POST", body: "{}" },
-    );
+  getExamHistory(runId: string) {
+    return jsonRequest<ExamHistoryDetail>(`/api/history/exams/${runId}`);
   }
 
-  getSettingsStatus() {
-    return jsonRequest<{ aiConfigured: boolean; speechConfigured: boolean }>(
-      "/api/settings/status",
-    );
+  getAISettings() {
+    return jsonRequest<RuntimeAISettings>("/api/settings/ai");
+  }
+
+  updateAISettings(input: RuntimeAISettingsUpdate) {
+    return jsonRequest<RuntimeAISettings>("/api/settings/ai", {
+      method: "PUT",
+      body: JSON.stringify(input),
+    });
+  }
+
+  testAIText() {
+    return jsonRequest<AIConnectionTestResult>("/api/settings/ai/test-text", {
+      method: "POST",
+      body: "{}",
+    });
+  }
+
+  async testAISpeech(audio: Blob) {
+    const body = new FormData();
+    const extension = audio.type.includes("ogg") ? "ogg" : audio.type.includes("wav") ? "wav" : "webm";
+    body.append("audio", audio, `test.${extension}`);
+    const response = await fetch("/api/settings/ai/test-speech", { method: "POST", body });
+    const payload = await response.json() as AIConnectionTestResult & { text?: string; error?: string };
+    if (!response.ok) throw new Error(payload.error ?? payload.message ?? "Не удалось проверить распознавание");
+    return payload;
   }
 }
 
@@ -299,6 +348,14 @@ export class MockExamApi implements ExamApi {
   private runSessions = new Map<string, { runId: string; position: number }>();
   private chatMessages = new Map<string, SessionMessage[]>();
   private chatReviews = new Map<string, AIReview[]>();
+  private runtimeAISettings: RuntimeAISettings = {
+    keys: {
+      openrouter: { configured: true, source: "environment" },
+      groq: { configured: true, source: "environment" },
+    },
+    text: { provider: "openrouter", model: "openai/gpt-5-mini", available: true },
+    speech: { provider: "groq", model: "whisper-large-v3-turbo", available: true },
+  };
 
   constructor(private readonly latency = 550) {
     this.restoreStudyChats();
@@ -473,6 +530,26 @@ export class MockExamApi implements ExamApi {
     return { run, session };
   }
 
+  async cancelExamRun(runId: string): Promise<void> {
+    await this.delay();
+    const run = this.runs.get(runId);
+    if (!run) throw new Error("Exam run not found");
+    if (run.status !== "active") throw new Error("Completed exam runs cannot be cancelled");
+
+    const sessionIds = new Set(run.items.flatMap((item) => item.sessionId ? [item.sessionId] : []));
+    const retained = this.attempts
+      .map((attempt, index) => ({ attempt, review: this.reviews[index] }))
+      .filter(({ attempt }) => !sessionIds.has(attempt.sessionId));
+    this.attempts = retained.map(({ attempt }) => attempt);
+    this.reviews = retained.flatMap(({ review }) => review ? [review] : []);
+    for (const sessionId of sessionIds) {
+      this.sessions.delete(sessionId);
+      this.followUps.delete(sessionId);
+      this.runSessions.delete(sessionId);
+    }
+    this.runs.delete(runId);
+  }
+
   async listChats(examId: string, questionId: string): Promise<StudyChatSummary[]> {
     await this.delay();
     return [...this.sessions.values()]
@@ -633,19 +710,108 @@ export class MockExamApi implements ExamApi {
     return { questionId, bookmarked };
   }
 
-  async getHistory() {
-    await this.delay();
-    return { attempts: this.attempts, reviews: this.reviews };
+  private examHistorySummary(run: ExamRun) {
+    const scored = run.items.flatMap((item) => item.baseScore === undefined ? [] : [item.baseScore]);
+    return {
+      runId: run.id,
+      examId: run.examId,
+      examTitle: mockExam.title,
+      questionCount: run.questionCount,
+      ...(scored.length === 0 ? {} : {
+        averageScore: scored.reduce((sum, score) => sum + score, 0) / scored.length,
+      }),
+      totalXp: run.items.reduce((sum, item) => sum + item.xp, 0),
+      completedAt: run.completedAt!,
+    };
   }
 
-  async testAI() {
+  async getHistory(): Promise<HistoryData> {
     await this.delay();
-    return { ok: true, model: "mock-model" };
+    const examRuns = [...this.runs.values()]
+      .filter((run) => run.status === "completed" && run.completedAt)
+      .sort((left, right) => right.completedAt!.localeCompare(left.completedAt!))
+      .map((run) => this.examHistorySummary(run));
+    const studyAttempts = this.attempts.flatMap((attempt, index) => {
+      if (this.runSessions.has(attempt.sessionId)) return [];
+      const review = this.reviews[index];
+      const question = mockExam.questions.find((item) => item.id === attempt.questionId);
+      return review ? [{
+        ...attempt,
+        examId: mockExam.id,
+        questionTitle: question?.displayText ?? attempt.questionId,
+        review,
+      }] : [];
+    });
+    return { examRuns, studyAttempts };
   }
 
-  async getSettingsStatus() {
+  async getExamHistory(runId: string): Promise<ExamHistoryDetail> {
     await this.delay();
-    return { aiConfigured: true, speechConfigured: true };
+    const run = this.runs.get(runId);
+    if (!run || run.status !== "completed" || !run.completedAt) {
+      throw new Error("Completed exam run not found");
+    }
+    return {
+      summary: this.examHistorySummary(run),
+      items: run.items.map((item) => {
+        const sessionId = item.sessionId!;
+        const attemptIndex = this.attempts.findIndex((attempt) => attempt.sessionId === sessionId);
+        const attempt = this.attempts[attemptIndex];
+        const review = this.reviews[attemptIndex];
+        const question = mockExam.questions.find((candidate) => candidate.id === item.questionId)!;
+        return {
+          position: item.position,
+          questionId: item.questionId,
+          questionTitle: question.displayText,
+          officialText: question.officialText,
+          answer: attempt.answer,
+          ...(item.baseScore === undefined ? {} : { baseScore: item.baseScore }),
+          xp: item.xp,
+          review,
+        };
+      }),
+    };
+  }
+
+  async getAISettings() {
+    await this.delay();
+    return structuredClone(this.runtimeAISettings);
+  }
+
+  async updateAISettings(input: RuntimeAISettingsUpdate) {
+    await this.delay();
+    this.runtimeAISettings = {
+      keys: {
+        openrouter: {
+          configured: input.clearOpenrouterApiKey ? true : this.runtimeAISettings.keys.openrouter.configured || Boolean(input.openrouterApiKey),
+          source: input.openrouterApiKey ? "application" : "environment",
+        },
+        groq: {
+          configured: input.clearGroqApiKey ? true : this.runtimeAISettings.keys.groq.configured || Boolean(input.groqApiKey),
+          source: input.groqApiKey ? "application" : "environment",
+        },
+      },
+      text: { provider: input.textProvider, model: input.textModel, available: true },
+      speech: {
+        provider: input.speechProvider,
+        model: input.speechModel,
+        available: input.speechProvider !== "disabled",
+      },
+    };
+    return structuredClone(this.runtimeAISettings);
+  }
+
+  async testAIText(): Promise<AIConnectionTestResult> {
+    await this.delay();
+    return { ok: true, provider: this.runtimeAISettings.text.provider, model: this.runtimeAISettings.text.model };
+  }
+
+  async testAISpeech(_audio: Blob): Promise<AIConnectionTestResult & { text?: string }> {
+    await this.delay();
+    const provider = this.runtimeAISettings.speech.provider === "disabled"
+      ? "groq"
+      : this.runtimeAISettings.speech.provider;
+    return { ok: true, provider, model: this.runtimeAISettings.speech.model, text: "Проверка распознавания" };
   }
 }
 
