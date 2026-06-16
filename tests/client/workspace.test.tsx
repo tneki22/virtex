@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
@@ -270,6 +270,7 @@ describe("Workspace", () => {
 
   it("restores the latest completed review without another AI request", async () => {
     const api = createApi();
+    const scrollHeight = vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(900);
     const review = {
       action: "final" as const,
       examinerMessage: "Ответ принят.",
@@ -297,7 +298,7 @@ describe("Workspace", () => {
       completedAt: "2026-01-01T01:00:00.000Z",
       messages: [
         { id: "m1", sessionId: "chat-1", role: "user", content: "Мой полный ответ", createdAt: "2026-01-01T00:00:00.000Z" },
-        { id: "m2", sessionId: "chat-1", role: "assistant", content: "Ответ принят.", createdAt: "2026-01-01T01:00:00.000Z" },
+        { id: "m2", sessionId: "chat-1", role: "assistant", content: "**Ответ принят.**\n\n- пункт", createdAt: "2026-01-01T01:00:00.000Z" },
       ],
       reviews: [review],
     });
@@ -305,9 +306,14 @@ describe("Workspace", () => {
     renderWorkspace(api, "/exams/exam/workspace/q-1?mode=study");
 
     expect(await screen.findByText("Мой полный ответ")).toBeInTheDocument();
+    const dialogue = screen.getByRole("region", { name: /предыдущие реплики/i });
+    await waitFor(() => expect(dialogue.scrollTop).toBe(900));
+    expect(screen.getByText("Ответ принят.").tagName).toBe("STRONG");
+    expect(screen.getByText("пункт").tagName).toBe("LI");
     expect(screen.getByText("84")).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: /сообщение/i })).toBeDisabled();
     expect(api.reviewChat).not.toHaveBeenCalled();
+    scrollHeight.mockRestore();
   });
 
   it("creates a tutor chat and quick prompts only fill the editor", async () => {

@@ -70,6 +70,7 @@ export interface ExaminerProfile {
   name: string;
   description: string;
   tone: "supportive" | "neutral" | "strict";
+  persona?: "magister" | "fomin" | "commission";
   quickPrompts?: QuickPrompt[];
 }
 
@@ -166,6 +167,7 @@ export interface AIReview {
   errors: string[];
   citations: SourceReference[];
   advice: string;
+  challengeQuestions?: string[];
   model?: string;
   packageVersion: string;
   promptVersion: string;

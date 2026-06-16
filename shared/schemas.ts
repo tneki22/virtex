@@ -70,6 +70,7 @@ export const examinerProfileSchema = z.object({
   name: z.string().min(1),
   description: z.string().min(1),
   tone: z.enum(["supportive", "neutral", "strict"]),
+  persona: z.enum(["magister", "fomin", "commission"]).optional(),
   quickPrompts: z.array(z.object({
     id: z.string().min(1),
     label: z.string().min(1),
@@ -141,6 +142,10 @@ export const aiReviewContentSchema = z.object({
   errors: z.array(z.string()),
   citations: z.array(aiCitationSchema),
   advice: z.string().min(1),
+  challengeQuestions: z
+    .array(z.string())
+    .nullish()
+    .transform((value) => value ?? undefined),
 });
 
 export const aiReviewSchema = aiReviewContentSchema.extend({

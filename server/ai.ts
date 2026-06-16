@@ -22,6 +22,57 @@ export interface OpenAICompatibleConfig {
   model: string;
 }
 
+const REVIEW_RESPONSE_FORMAT = {
+  type: "json_schema" as const,
+  json_schema: {
+    name: "exam_review",
+    strict: true,
+    schema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        action: { type: "string", enum: ["clarify", "final"] },
+        examinerMessage: { type: "string" },
+        baseScore: { type: ["number", "null"], minimum: 0, maximum: 100 },
+        personaVerdict: { type: "string" },
+        strengths: { type: "array", items: { type: "string" } },
+        gaps: { type: "array", items: { type: "string" } },
+        errors: { type: "array", items: { type: "string" } },
+        citations: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              documentId: { type: "string" },
+              page: { type: "integer", minimum: 1 },
+              fragmentId: { type: ["string", "null"] },
+              note: { type: ["string", "null"] },
+            },
+            required: ["documentId", "page", "fragmentId", "note"],
+          },
+        },
+        advice: { type: "string" },
+        challengeQuestions: { type: "array", items: { type: "string" } },
+      },
+      required: [
+        "action",
+        "examinerMessage",
+        "baseScore",
+        "personaVerdict",
+        "strengths",
+        "gaps",
+        "errors",
+        "citations",
+        "advice",
+      ],
+    },
+  },
+};
+
+const JSON_ONLY_INSTRUCTION =
+  "Return only one valid JSON object. Do not wrap it in markdown or add commentary.";
+
 export class OpenAICompatibleProvider implements AIProvider {
   readonly model: string;
   private readonly client: OpenAI;
@@ -37,65 +88,36 @@ export class OpenAICompatibleProvider implements AIProvider {
   }
 
   async review(input: ReviewProviderInput): Promise<unknown> {
-    const response = await this.client.chat.completions.create({
+    const messages = input.messages.map((message) => ({
+      role: message.role,
+      content: message.content,
+    }));
+    const baseRequest = {
       model: this.model,
-      response_format: {
-        type: "json_schema",
-        json_schema: {
-          name: "exam_review",
-          strict: true,
-          schema: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              action: { type: "string", enum: ["clarify", "final"] },
-              examinerMessage: { type: "string" },
-              baseScore: { type: ["number", "null"], minimum: 0, maximum: 100 },
-              personaVerdict: { type: "string" },
-              strengths: { type: "array", items: { type: "string" } },
-              gaps: { type: "array", items: { type: "string" } },
-              errors: { type: "array", items: { type: "string" } },
-              citations: {
-                type: "array",
-                items: {
-                  type: "object",
-                  additionalProperties: false,
-                  properties: {
-                    documentId: { type: "string" },
-                    page: { type: "integer", minimum: 1 },
-                    fragmentId: { type: ["string", "null"] },
-                    note: { type: ["string", "null"] },
-                  },
-                  required: ["documentId", "page", "fragmentId", "note"],
-                },
-              },
-              advice: { type: "string" },
-            },
-            required: [
-              "action",
-              "examinerMessage",
-              "baseScore",
-              "personaVerdict",
-              "strengths",
-              "gaps",
-              "errors",
-              "citations",
-              "advice",
-            ],
-          },
-        },
-      },
-      messages: input.messages.map((message) => ({
-        role: message.role,
-        content: message.content,
-      })),
+      messages,
       max_completion_tokens: 850,
       ...(this.provider === "openrouter" ? { reasoning_effort: "minimal" as const } : {}),
       seed: 42,
-    });
+    };
+
+    let response;
+    try {
+      response = await this.client.chat.completions.create({
+        ...baseRequest,
+        response_format: REVIEW_RESPONSE_FORMAT,
+      });
+    } catch {
+      response = await this.client.chat.completions.create({
+        ...baseRequest,
+        messages: [
+          { role: "system" as const, content: JSON_ONLY_INSTRUCTION },
+          ...messages,
+        ],
+      });
+    }
     const content = response.choices[0]?.message.content;
     if (!content) throw new Error("AI provider returned an empty response");
-    return JSON.parse(content);
+    return content.trim();
   }
 
   async chat(input: TutorRequest): Promise<string> {

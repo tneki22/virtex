@@ -285,11 +285,15 @@ const mockExam: ExamPackage = {
   subject: "Базы данных",
   profiles: [
     {
-      id: "mentor", name: "Наставник", description: "Помогает уточнениями", tone: "supportive",
+      id: "mentor", name: "Магистр", description: "Помогает уточнениями и объясняет простым языком", tone: "supportive", persona: "magister",
       quickPrompts: [{ id: "pizza", label: "Пример с пиццей", prompt: "Объясни тему на примере доставки пиццы" }],
     },
     {
-      id: "strict", name: "Комиссия", description: "Требует точности", tone: "strict",
+      id: "examiner", name: "Фомин М.М.", description: "Требует точных формулировок и задаёт смежные вопросы", tone: "neutral", persona: "fomin",
+      quickPrompts: [{ id: "one-minute", label: "Ответ за минуту", prompt: "Помоги подготовить точный ответ за минуту" }],
+    },
+    {
+      id: "strict", name: "Комиссия", description: "Захаров, Тихомирова и Пугачев разбирают ответ с разных сторон", tone: "strict", persona: "commission",
       quickPrompts: [{ id: "counterexample", label: "Контрпример", prompt: "Приведи сложный контрпример" }],
     },
   ],
@@ -678,6 +682,7 @@ export class MockExamApi implements ExamApi {
       personaVerdict: score >= 80 ? "Готов" : "Нужно повторить",
       strengths: ["Есть определение"], gaps: score >= 80 ? [] : ["Не все свойства раскрыты"],
       errors: [], citations: mockExam.questions[0].sources, advice: "Сформулируйте ответ вслух ещё раз.",
+      challengeQuestions: [],
       model: "mock", packageVersion: mockExam.version, promptVersion: "mock", schemaVersion: "mock",
     };
     this.reviews.unshift(review);

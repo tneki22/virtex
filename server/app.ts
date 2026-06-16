@@ -100,11 +100,10 @@ function validateProviderResponse(
   let parsed: ReturnType<typeof aiReviewContentSchema.safeParse>;
   if (typeof value !== "string") parsed = aiReviewContentSchema.safeParse(value);
   else {
-    try {
-      parsed = aiReviewContentSchema.safeParse(JSON.parse(value));
-    } catch {
-      parsed = aiReviewContentSchema.safeParse(value);
-    }
+    const json = parseJsonCandidate(value);
+    parsed = json.success
+      ? aiReviewContentSchema.safeParse(json.data)
+      : aiReviewContentSchema.safeParse(value);
   }
   if (!parsed.success) return parsed;
 
@@ -124,6 +123,58 @@ function validateProviderResponse(
   );
 
   return validAction && validCitations ? parsed : { success: false as const };
+}
+
+function parseJsonCandidate(value: string): { success: true; data: unknown } | { success: false } {
+  const trimmed = value.trim();
+  for (const candidate of jsonCandidates(trimmed)) {
+    try {
+      return { success: true, data: JSON.parse(candidate) };
+    } catch {
+      continue;
+    }
+  }
+  return { success: false };
+}
+
+function jsonCandidates(value: string): string[] {
+  const candidates = [value];
+  const fenced = value.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (fenced?.[1]) candidates.push(fenced[1].trim());
+  const object = extractFirstJsonObject(value);
+  if (object) candidates.push(object);
+  return candidates;
+}
+
+function extractFirstJsonObject(value: string): string | null {
+  const start = value.indexOf("{");
+  if (start === -1) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < value.length; index += 1) {
+    const char = value[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = inString;
+      continue;
+    }
+    if (char === "\"") {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (char === "{") depth += 1;
+    if (char === "}") {
+      depth -= 1;
+      if (depth === 0) return value.slice(start, index + 1);
+    }
+  }
+  return null;
 }
 
 export function createApp(options: CreateAppOptions) {
@@ -715,7 +766,8 @@ export function createApp(options: CreateAppOptions) {
       profile,
       answer,
       dialogue,
-      forceFinal: session.follow_up_count >= exam.policy.maxFollowUps,
+      forceFinal: session.kind === "exam" || session.follow_up_count >= exam.policy.maxFollowUps,
+      sessionKind: session.kind,
     });
     let parsed;
     try {

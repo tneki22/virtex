@@ -4,7 +4,11 @@ import {
   readinessFromScore,
   sourceRefKey,
 } from "../../shared/progress.js";
-import { examPackageSchema, sessionKindSchema } from "../../shared/schemas.js";
+import {
+  aiReviewContentSchema,
+  examPackageSchema,
+  sessionKindSchema,
+} from "../../shared/schemas.js";
 import { normalizeStudyMode } from "../../shared/study-mode.js";
 
 describe("normalizeStudyMode", () => {
@@ -81,6 +85,55 @@ describe("examPackageSchema", () => {
     });
 
     expect(result.success).toBe(true);
+  });
+
+  it("accepts typed examiner personas and challenge questions in AI reviews", () => {
+    const packageResult = examPackageSchema.safeParse({
+      id: "sample",
+      version: "1.0.0",
+      title: "Sample exam",
+      description: "Fixture",
+      subject: "Databases",
+      profiles: [{
+        id: "mentor",
+        name: "Магистр",
+        description: "Explains",
+        tone: "supportive",
+        persona: "magister",
+      }],
+      documents: [{ id: "book", title: "Book", type: "text", path: "book.txt" }],
+      questions: [{
+        id: "q-1",
+        officialNumber: 1,
+        officialText: "Question",
+        displayText: "Question",
+        groupId: "core",
+        groupTitle: "Core",
+        referenceAnswer: "Answer",
+        emphasis: [],
+        sources: [{ documentId: "book", page: 1 }],
+      }],
+      thresholds: { almostReady: 60, ready: 80 },
+      policy: { maxFollowUps: 2, timerMinutes: null, referenceReveal: "after_attempt_or_explicit" },
+      styleGuide: "Write clearly.",
+    });
+    expect(packageResult.success).toBe(true);
+
+    const reviewResult = aiReviewContentSchema.safeParse({
+      action: "final",
+      examinerMessage: "Захаров: Ну что, дурачком притворяемся или правда формулировка поплыла?",
+      baseScore: 40,
+      personaVerdict: "Комиссия недовольна.",
+      strengths: [],
+      gaps: ["Нет обязательного пункта"],
+      errors: [],
+      citations: [],
+      advice: "Пересоберите ответ по эталонным пунктам.",
+      challengeQuestions: ["Пугачев: А если база данных решит спрятаться в чайнике?"],
+    });
+    expect(reviewResult.success).toBe(true);
+    if (!reviewResult.success) throw new Error("review schema should accept challenge questions");
+    expect(reviewResult.data.challengeQuestions).toHaveLength(1);
   });
 
   it("rejects a question without a reference answer or source", () => {

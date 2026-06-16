@@ -399,6 +399,25 @@ describe("exam API", () => {
     }
   });
 
+  it("forces final review immediately for exam sessions", async () => {
+    const provider = new SequenceProvider([finalReview]);
+    const app = createApp({ database, exams: [exam], aiProvider: provider });
+    const created = await request(app).post("/api/exam-runs").send({
+      examId: "exam",
+      profileId: "neutral",
+      questionCount: 1,
+    });
+
+    const response = await request(app)
+      .post(`/api/sessions/${created.body.session.id}/review`)
+      .send({ answer: "A transaction is atomic." });
+
+    expect(response.status).toBe(200);
+    expect(provider.calls).toHaveLength(1);
+    expect(provider.calls[0].forceFinal).toBe(true);
+    expect(provider.calls[0].messages[0].content).toContain("exam_final");
+  });
+
   it("groups completed exam runs and returns ordered exam history details", async () => {
     const multiQuestionExam: ExamPackage = {
       ...exam,
@@ -610,6 +629,22 @@ describe("exam API", () => {
     expect(response.status).toBe(200);
     expect(provider.calls).toHaveLength(2);
     expect(provider.calls[1].repair).toBe(true);
+  });
+
+  it("accepts a fenced JSON AI review response", async () => {
+    const provider = new SequenceProvider([
+      `Here is the review:\n\`\`\`json\n${JSON.stringify(finalReview)}\n\`\`\``,
+    ]);
+    const app = createApp({ database, exams: [exam], aiProvider: provider });
+    const sessionId = await createSession(app);
+
+    const response = await request(app)
+      .post(`/api/sessions/${sessionId}/review`)
+      .send({ answer: "Atomic unit." });
+
+    expect(response.status).toBe(200);
+    expect(response.body.action).toBe("final");
+    expect(provider.calls).toHaveLength(1);
   });
 
   it("accepts strict-schema nulls for optional clarification fields", async () => {

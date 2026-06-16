@@ -25,7 +25,7 @@ import {
   X,
 } from "lucide-react";
 import type { CSSProperties } from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import type {
   ExamQuestionCount,
@@ -45,8 +45,8 @@ import { ErrorState, LoadingState } from "../components/AppShell.js";
 import { ConfirmDialog } from "../components/ConfirmDialog.js";
 import { ExaminerProfilePicker } from "../components/ExaminerProfilePicker.js";
 import { ExamRunSummary } from "../components/ExamRunSummary.js";
+import { MarkdownMessage } from "../components/MarkdownMessage.js";
 import { PanelResizeHandle } from "../components/PanelResizeHandle.js";
-import { ProgressiveText } from "../components/ProgressiveText.js";
 import { MIN_LEFT, MIN_RIGHT, usePanelLayout } from "../hooks/usePanelLayout.js";
 import { useVoiceInput } from "../hooks/useVoiceInput.js";
 import { clearExamRunDrafts } from "../exam-drafts.js";
@@ -102,6 +102,8 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [rightFullscreen, setRightFullscreen] = useState(false);
   const searchInput = useRef<HTMLInputElement>(null);
+  const answerTextarea = useRef<HTMLTextAreaElement>(null);
+  const dialogueTrail = useRef<HTMLDivElement>(null);
   const preserveQuestionWhileLoading = useRef(false);
   const panelLayout = usePanelLayout();
   const runId = searchParams.get("run");
@@ -229,6 +231,28 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
     if (!draftKey) return;
     localStorage.setItem(draftKey, answer);
   }, [answer, draftKey]);
+
+  useEffect(() => {
+    const textarea = answerTextarea.current;
+    if (!textarea) return;
+    if (mode !== "study") {
+      textarea.style.height = "";
+      return;
+    }
+    textarea.style.height = "auto";
+    textarea.style.height = `${textarea.scrollHeight}px`;
+  }, [answer, mode, activeChat?.id]);
+
+  useLayoutEffect(() => {
+    const trail = dialogueTrail.current;
+    if (!trail || mode !== "study") return;
+    const scrollToBottom = () => {
+      trail.scrollTop = trail.scrollHeight;
+    };
+    scrollToBottom();
+    const frame = window.requestAnimationFrame(scrollToBottom);
+    return () => window.cancelAnimationFrame(frame);
+  }, [dialogueTurns.length, mode, activeChat?.id]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -758,20 +782,21 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
           {(mode === "exam" || activeChat) && <section className="answer-editor-section">
             <div className="editor-label"><span>{activeChat?.kind === "tutor" ? "Сообщение" : review?.action === "clarify" ? "Ваше уточнение" : "Ваш ответ"}</span><small>{completed ? "Чат завершён" : "Черновик сохраняется локально"}</small></div>
             {dialogueTurns.length > 0 && (
-              <div className="dialogue-trail" aria-label="Предыдущие реплики">
+              <div ref={dialogueTrail} className="dialogue-trail" role="region" aria-label="Предыдущие реплики">
                 {dialogueTurns.map((turn) => (
                   <div className={`dialogue-turn role-${turn.role}`} key={turn.id}>
                     <strong>{turn.role === "student" ? "Вы" : "Экзаменатор"}</strong>
-                    {turn.role === "examiner"
-                      ? <ProgressiveText text={turn.text} />
-                      : <p>{turn.text}</p>}
+                    <MarkdownMessage text={turn.text} />
                   </div>
                 ))}
               </div>
             )}
             <textarea
+              ref={answerTextarea}
+              className={mode === "study" ? "chat-answer-input" : undefined}
               value={answer}
               disabled={completed}
+              rows={mode === "study" ? 1 : undefined}
               onChange={(event) => setAnswer(event.target.value)}
               onKeyDown={(event) => {
                 if ((event.ctrlKey || event.metaKey) && event.key === "Enter") void submitAnswer();
@@ -817,6 +842,12 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
                 </div>
               )}
               <p className="review-advice staged-line"><strong>Следующий шаг:</strong> {review.advice}</p>
+              {(review.challengeQuestions?.length ?? 0) > 0 && (
+                <div className="review-challenge-questions staged-line">
+                  <h3>Вопросы на подумать</h3>
+                  {review.challengeQuestions!.map((item) => <p key={item}>{item}</p>)}
+                </div>
+              )}
               {review.xp > 0 && <span className="xp-badge">+{review.xp} XP</span>}
             </section>
           )}

@@ -18,6 +18,20 @@ describe("database fundamentals package", () => {
     }
   });
 
+  it("uses the new typed personas and public profile names", async () => {
+    const exam = await compileExamPackage(packageRoot);
+
+    expect(exam.profiles.map((profile) => ({
+      id: profile.id,
+      name: profile.name,
+      persona: profile.persona,
+    }))).toEqual([
+      { id: "mentor", name: "Магистр", persona: "magister" },
+      { id: "examiner", name: "Фомин М.М.", persona: "fomin" },
+      { id: "strict", name: "Комиссия", persona: "commission" },
+    ]);
+  });
+
   it("contains 48 independent, sourced questions with reference answers", async () => {
     const exam = await compileExamPackage(packageRoot);
     const ids = exam.questions.map((question) => question.id);

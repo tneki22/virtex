@@ -146,6 +146,61 @@ describe("buildReviewRequest", () => {
 
     expect(request.estimatedInputTokens).toBeLessThanOrEqual(MAX_ESTIMATED_INPUT_TOKENS);
   });
+
+  it("keeps the full reference answer and exposes the exam final mode", () => {
+    const longReference = `${"core ".repeat(2_000)}TAIL-END`;
+    const request = buildReviewRequest({
+      exam,
+      question: { ...exam.questions[0], referenceAnswer: longReference },
+      profile: { id: "examiner", name: "Фомин М.М.", description: "Strict", tone: "neutral", persona: "fomin" },
+      answer: "student answer",
+      dialogue: [],
+      forceFinal: false,
+      sessionKind: "exam",
+    });
+    const serialized = JSON.stringify(request.messages);
+
+    expect(request.forceFinal).toBe(true);
+    expect(serialized).toContain("exam_final");
+    expect(serialized).toContain("TAIL-END");
+    expect(serialized).not.toContain("сокращено");
+  });
+
+  it("adds sharply different persona instructions for Magister, Fomin and Commission", () => {
+    const magister = buildReviewRequest({
+      exam,
+      question: exam.questions[0],
+      profile: { id: "mentor", name: "Магистр", description: "Warm", tone: "supportive", persona: "magister" },
+      answer: "answer",
+      dialogue: [],
+      forceFinal: true,
+    });
+    const fomin = buildReviewRequest({
+      exam,
+      question: exam.questions[0],
+      profile: { id: "examiner", name: "Фомин М.М.", description: "Precise", tone: "neutral", persona: "fomin" },
+      answer: "answer",
+      dialogue: [],
+      forceFinal: true,
+    });
+    const commission = buildReviewRequest({
+      exam,
+      question: exam.questions[0],
+      profile: { id: "strict", name: "Комиссия", description: "Harsh", tone: "strict", persona: "commission" },
+      answer: "answer",
+      dialogue: [],
+      forceFinal: true,
+    });
+
+    expect(magister.messages[0].content).toContain("Смотри");
+    expect(fomin.messages[0].content).toContain("Фомин М.М.");
+    expect(fomin.messages[0].content).toContain("точные формулировки");
+    expect(commission.messages[0].content).toContain("Захаров");
+    expect(commission.messages[0].content).toContain("Тихомирова");
+    expect(commission.messages[0].content).toContain("Пугачев");
+    expect(commission.messages[0].content).toContain("дурачком");
+    expect(commission.messages[0].content).toContain("безнадежным");
+  });
 });
 
 describe("buildTutorRequest", () => {
@@ -199,5 +254,22 @@ describe("buildTutorRequest", () => {
     expect(serialized).toContain("old-19");
     expect(serialized).not.toContain("old-0");
     expect(request.estimatedInputTokens).toBeLessThanOrEqual(MAX_TUTOR_ESTIMATED_INPUT_TOKENS);
+  });
+
+  it("uses multi-voice commission instructions in study tutor mode", () => {
+    const request = buildTutorRequest({
+      exam,
+      question: exam.questions[0],
+      profile: { id: "strict", name: "Комиссия", description: "Harsh", tone: "strict", persona: "commission" },
+      message: "Explain",
+      dialogue: [],
+    });
+    const system = request.messages[0].content;
+
+    expect(system).toContain("study_tutor");
+    expect(system).toContain("2-5 вопросов");
+    expect(system).toContain("Захаров");
+    expect(system).toContain("Пугачев");
+    expect(system).toContain("странные");
   });
 });

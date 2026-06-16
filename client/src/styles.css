@@ -218,14 +218,25 @@ kbd { border: 1px solid var(--line); border-radius: 3px; padding: 1px 5px; color
 .editor-label { display: flex; justify-content: space-between; padding: 12px 15px; border-bottom: 1px solid var(--line); font-size: 10px; font-weight: 760; text-transform: uppercase; letter-spacing: 0.09em; }
 .editor-label small { color: var(--muted); font-weight: 500; text-transform: none; letter-spacing: 0; }
 .answer-editor-section textarea { width: 100%; min-height: 230px; padding: 22px; border: 0; resize: vertical; outline: 0; background: transparent; color: var(--ink); font-family: "Newsreader Variable", serif; font-size: 19px; line-height: 1.65; }
+.answer-editor-section textarea.chat-answer-input { min-height: 48px; max-height: 180px; padding: 11px 14px; resize: none; overflow-y: auto; font-family: "Manrope Variable", sans-serif; font-size: 14px; line-height: 1.55; }
 .answer-editor-section textarea::placeholder { color: #9b9d99; }
 .answer-editor-section textarea:disabled { color: var(--muted); cursor: not-allowed; opacity: .78; }
-.dialogue-trail { padding: 18px 22px 4px; display: grid; gap: 14px; border-bottom: 1px solid var(--line); }
+.dialogue-trail { max-height: min(74vh, 760px); padding: 18px 22px 4px; display: grid; gap: 14px; overflow-y: auto; overscroll-behavior: contain; border-bottom: 1px solid var(--line); }
 .dialogue-turn { width: min(88%, 72ch); padding: 14px 16px; border: 1px solid var(--line); background: var(--paper); }
 .dialogue-turn.role-examiner { margin-right: auto; border-left: 3px solid var(--navy); }
 .dialogue-turn.role-student { margin-left: auto; border-right: 3px solid var(--accent); }
 .dialogue-turn > strong { display: block; margin-bottom: 6px; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
-.dialogue-turn p, .progressive-text { margin: 0; color: var(--ink); font-family: "Newsreader Variable", serif; font-size: 17px; line-height: 1.65; white-space: pre-wrap; }
+.dialogue-turn p, .progressive-text, .markdown-message { margin: 0; color: var(--ink); font-family: "Newsreader Variable", serif; font-size: 17px; line-height: 1.65; }
+.markdown-message { overflow-wrap: anywhere; }
+.markdown-message > :first-child { margin-top: 0; }
+.markdown-message > :last-child { margin-bottom: 0; }
+.markdown-message p { margin: 0 0 10px; white-space: pre-wrap; }
+.markdown-message ul, .markdown-message ol { margin: 8px 0 10px; padding-left: 22px; }
+.markdown-message li { margin: 4px 0; }
+.markdown-message code { padding: 2px 5px; background: rgba(30, 38, 41, .08); font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; font-size: .88em; }
+.markdown-message pre { margin: 10px 0; padding: 12px; overflow-x: auto; background: rgba(30, 38, 41, .08); border: 1px solid var(--line); }
+.markdown-message pre code { padding: 0; background: transparent; white-space: pre; }
+.markdown-message blockquote { margin: 10px 0; padding-left: 12px; border-left: 3px solid var(--line-strong); color: var(--muted); }
 .progressive-text button { display: block; margin-top: 7px; padding: 0; border: 0; border-bottom: 1px solid currentColor; background: transparent; color: var(--muted); cursor: pointer; font: 700 9px/1.5 "Manrope Variable", sans-serif; text-transform: uppercase; letter-spacing: .08em; }
 .new-attempt-button { margin-top: 14px; }
 .editor-footer { min-height: 58px; padding: 9px 10px 9px 16px; display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--line); color: var(--muted); font-size: 10px; }
@@ -256,6 +267,9 @@ kbd { border: 1px solid var(--line); border-radius: 3px; padding: 1px 5px; color
 .review-columns h3 { font-size: 10px; text-transform: uppercase; letter-spacing: .09em; }
 .review-columns p { color: var(--muted); font-size: 11px; line-height: 1.55; }
 .review-advice { margin: 18px 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.review-challenge-questions { margin: 18px 0; padding-top: 14px; border-top: 1px solid var(--line); }
+.review-challenge-questions h3 { margin: 0 0 8px; font-size: 10px; text-transform: uppercase; letter-spacing: .09em; }
+.review-challenge-questions p { margin: 7px 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
 .text-button { display: inline-flex; gap: 7px; align-items: center; border: 0; padding: 3px 0; background: transparent; color: var(--accent); cursor: pointer; font-size: 11px; font-weight: 750; transition: color var(--ease), transform var(--ease); }
 .xp-badge { float: right; padding: 4px 7px; background: var(--navy); color: white; font-size: 9px; letter-spacing: .08em; }
 .staged-line { animation: staged-reveal var(--motion-slow) var(--motion-ease-out) both; }
