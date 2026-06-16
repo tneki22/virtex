@@ -73,6 +73,15 @@ const REVIEW_RESPONSE_FORMAT = {
 const JSON_ONLY_INSTRUCTION =
   "Return only one valid JSON object. Do not wrap it in markdown or add commentary.";
 
+const REVIEW_REPAIR_INSTRUCTION = [
+  "Previous review response failed validation. Return a corrected review now.",
+  "Return only one valid JSON object matching the exam_review schema.",
+  "If action is final, baseScore must be a number from 0 to 100.",
+  "If action is clarify, baseScore must be null.",
+  "Citations must use exact documentId, page, and fragmentId values from the supplied exam_context sources. If no exact source applies, return an empty citations array.",
+  "Do not include markdown, commentary, or fields outside the schema.",
+].join(" ");
+
 export class OpenAICompatibleProvider implements AIProvider {
   readonly model: string;
   private readonly client: OpenAI;
@@ -92,12 +101,21 @@ export class OpenAICompatibleProvider implements AIProvider {
       role: message.role,
       content: message.content,
     }));
+    const reviewMessages = input.repair
+      ? [
+          {
+            role: "system" as const,
+            content: `${REVIEW_REPAIR_INSTRUCTION} ${input.forceFinal ? "For this request action must be final." : ""}`.trim(),
+          },
+          ...messages,
+        ]
+      : messages;
     const baseRequest = {
       model: this.model,
-      messages,
-      max_completion_tokens: 850,
+      messages: reviewMessages,
+      max_completion_tokens: 1_600,
       ...(this.provider === "openrouter" ? { reasoning_effort: "minimal" as const } : {}),
-      seed: 42,
+      seed: input.repair ? 43 : 42,
     };
 
     let response;
@@ -111,7 +129,7 @@ export class OpenAICompatibleProvider implements AIProvider {
         ...baseRequest,
         messages: [
           { role: "system" as const, content: JSON_ONLY_INSTRUCTION },
-          ...messages,
+          ...reviewMessages,
         ],
       });
     }

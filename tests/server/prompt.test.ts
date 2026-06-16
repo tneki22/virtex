@@ -201,6 +201,80 @@ describe("buildReviewRequest", () => {
     expect(commission.messages[0].content).toContain("дурачком");
     expect(commission.messages[0].content).toContain("безнадежным");
   });
+
+  it("requires living dialogue while keeping answers structured", () => {
+    const magister = buildReviewRequest({
+      exam,
+      question: exam.questions[0],
+      profile: { id: "mentor", name: "Магистр", description: "Warm", tone: "supportive", persona: "magister" },
+      answer: "answer",
+      dialogue: [],
+      forceFinal: true,
+    });
+    const commission = buildReviewRequest({
+      exam,
+      question: exam.questions[0],
+      profile: { id: "strict", name: "Комиссия", description: "Harsh", tone: "strict", persona: "commission" },
+      answer: "answer",
+      dialogue: [],
+      forceFinal: true,
+    });
+
+    expect(magister.messages[0].content).toContain("не звучал как обычный чат-бот");
+    expect(magister.messages[0].content).toContain("живой разговор");
+    expect(magister.messages[0].content).toContain("короткие структурные блоки");
+    expect(commission.messages[0].content).toContain("Тихомирова делает вид, что ей всё это смертельно надоело");
+    expect(commission.messages[0].content).not.toMatch(/лень|ленится|лениво/ui);
+    expect(commission.messages[0].content).toContain("Захаров вредный");
+    expect(commission.messages[0].content).toContain("Пугачев делает вопросы ещё страннее");
+  });
+
+  it("makes Fomin humorous but still strict and exam-kind", () => {
+    const fomin = buildReviewRequest({
+      exam,
+      question: exam.questions[0],
+      profile: { id: "examiner", name: "Фомин М.М.", description: "Precise", tone: "neutral", persona: "fomin" },
+      answer: "answer",
+      dialogue: [],
+      forceFinal: true,
+      sessionKind: "exam",
+    });
+    const system = fomin.messages[0].content;
+
+    expect(system).toContain("больше юмора");
+    expect(system).toContain("чёрные аналогии");
+    expect(system).toContain("может натянуть на 3-4");
+    expect(system).toContain("добрый, но проверяет жёстко");
+  });
+
+  it("forbids chatbot-style offers and full answer rewrites for Fomin and Commission", () => {
+    const fomin = buildReviewRequest({
+      exam,
+      question: exam.questions[0],
+      profile: { id: "examiner", name: "Фомин М.М.", description: "Precise", tone: "neutral", persona: "fomin" },
+      answer: "answer",
+      dialogue: [],
+      forceFinal: true,
+    });
+    const commission = buildReviewRequest({
+      exam,
+      question: exam.questions[0],
+      profile: { id: "strict", name: "Комиссия", description: "Harsh", tone: "strict", persona: "commission" },
+      answer: "answer",
+      dialogue: [],
+      forceFinal: true,
+    });
+
+    expect(fomin.messages[0].content).toContain("Не предлагай написать или переписать полный ответ");
+    expect(fomin.messages[0].content).toContain("не спрашивай «хочешь» или «хотите»");
+    expect(fomin.messages[0].content).toContain("не раскрывай весь эталон");
+    expect(fomin.messages[0].content).toContain("не перечисляй все пункты эталона");
+    expect(fomin.messages[0].content).toContain("не делай длинный список рекомендаций");
+    expect(commission.messages[0].content).toContain("не давай полный эталонный ответ");
+    expect(commission.messages[0].content).toContain("никаких блоков «Что исправить»");
+    expect(commission.messages[0].content).toContain("только реплики комиссии и итоговый вердикт");
+    expect(commission.messages[0].content).toContain("без маркированных и нумерованных списков");
+  });
 });
 
 describe("buildTutorRequest", () => {
@@ -271,5 +345,63 @@ describe("buildTutorRequest", () => {
     expect(system).toContain("Захаров");
     expect(system).toContain("Пугачев");
     expect(system).toContain("странные");
+  });
+
+  it("tells study tutor personas to be conversational but structured", () => {
+    const magister = buildTutorRequest({
+      exam,
+      question: exam.questions[0],
+      profile: { id: "mentor", name: "Магистр", description: "Warm", tone: "supportive", persona: "magister" },
+      message: "Explain",
+      dialogue: [],
+    });
+    const commission = buildTutorRequest({
+      exam,
+      question: exam.questions[0],
+      profile: { id: "strict", name: "Комиссия", description: "Harsh", tone: "strict", persona: "commission" },
+      message: "Explain",
+      dialogue: [],
+    });
+
+    expect(magister.messages[0].content).toContain("живой разговор");
+    expect(magister.messages[0].content).toContain("без сухого канцелярского тона");
+    expect(commission.messages[0].content).toContain("живой диалог комиссии");
+    expect(commission.messages[0].content).toContain("без учебного конспекта");
+  });
+
+  it("keeps Fomin and Commission tutor chat from acting like a document chatbot", () => {
+    const fomin = buildTutorRequest({
+      exam,
+      question: exam.questions[0],
+      profile: { id: "examiner", name: "Фомин М.М.", description: "Precise", tone: "neutral", persona: "fomin" },
+      message: "Explain",
+      dialogue: [],
+    });
+    const commission = buildTutorRequest({
+      exam,
+      question: exam.questions[0],
+      profile: { id: "strict", name: "Комиссия", description: "Harsh", tone: "strict", persona: "commission" },
+      message: "Explain",
+      dialogue: [],
+    });
+
+    expect(fomin.messages[0].content).toContain("не предлагай написать полный ответ");
+    expect(fomin.messages[0].content).toContain("не спрашивай, хочет ли пользователь");
+    expect(fomin.messages[0].content).toContain("не используй нумерованный список");
+    expect(fomin.messages[0].content).toContain("не используй маркированный список");
+    expect(fomin.messages[0].content).toContain("не называй больше двух пропущенных пунктов");
+    expect(fomin.messages[0].content).toContain("если пользователь мало помнит, сначала допрашивай");
+    expect(fomin.messages[0].content).toContain("Формат study_tutor для Фомина строго три короткие строки");
+    expect(fomin.messages[0].content).toContain("Фомин НЕ называет остальные четыре");
+    expect(fomin.messages[0].content).toContain("без слова «хотите»");
+    expect(fomin.messages[0].content).toContain("не раскрывай весь эталон");
+    expect(fomin.messages[0].content).toContain("referenceAnswer is a private examiner checklist");
+    expect(commission.messages[0].content).toContain("симуляция комиссии из ада");
+    expect(commission.messages[0].content).toContain("не превращай ответ в учебный документ");
+    expect(commission.messages[0].content).toContain("ровно реплики и одна строка «Вердикт:");
+    expect(commission.messages[0].content).toContain("не перечисляй полный набор пунктов");
+    expect(commission.messages[0].content).toContain("Комиссия НЕ называет остальные четыре");
+    expect(commission.messages[0].content).toContain("максимум два названных термина за весь ответ");
+    expect(commission.messages[0].content).not.toMatch(/лень|ленится|лениво/ui);
   });
 });

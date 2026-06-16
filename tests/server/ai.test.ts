@@ -137,7 +137,7 @@ describe("OpenAICompatibleProvider", () => {
     expect(body.response_format.json_schema.schema.properties.challengeQuestions).toMatchObject({
       type: "array",
     });
-    expect(body.max_completion_tokens).toBeLessThanOrEqual(900);
+    expect(body.max_completion_tokens).toBeLessThanOrEqual(1_600);
     expect(body.reasoning_effort).toBe("minimal");
     expect(body.seed).toBe(42);
   });
@@ -227,6 +227,46 @@ describe("OpenAICompatibleProvider", () => {
       forceFinal: true,
       messages: [{ role: "user", content: "Review" }],
     })).resolves.toBe("not json");
+  });
+
+  it("adds repair instructions when retrying an invalid review response", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "completion-1",
+          object: "chat.completion",
+          created: 1,
+          model: "openai/gpt-5-mini",
+          choices: [{
+            index: 0,
+            finish_reason: "stop",
+            message: { role: "assistant", content: "{}" },
+          }],
+          usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = new OpenAICompatibleProvider({
+      apiKey: "test-key",
+      baseUrl: "https://openrouter.test/api/v1",
+      model: "openai/gpt-5-mini",
+    });
+
+    await provider.review({
+      forceFinal: true,
+      repair: true,
+      messages: [{ role: "user", content: "Review" }],
+    });
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(body.messages[0]).toMatchObject({
+      role: "system",
+      content: expect.stringContaining("Previous review response failed validation"),
+    });
+    expect(body.messages[0].content).toContain("action must be final");
+    expect(body.seed).not.toBe(42);
   });
 
   it("omits OpenRouter reasoning options for Groq text requests", async () => {
