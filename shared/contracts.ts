@@ -3,16 +3,30 @@ export type SessionKind = "tutor" | "review" | "exam";
 export type AIProviderId = "openrouter" | "groq";
 export type SpeechProviderId = AIProviderId | "disabled";
 export type KeySource = "application" | "environment" | "missing";
+export type StreamingPreference = "auto" | "on" | "off";
+
+export interface ExamMaterialFile {
+  name: string;
+  size: number;
+  url: string;
+}
 
 export interface RuntimeAISettings {
   keys: Record<AIProviderId, { configured: boolean; source: KeySource }>;
-  text: { provider: AIProviderId; model: string; available: boolean };
+  text: {
+    provider: AIProviderId;
+    model: string;
+    available: boolean;
+    streamingPreference: StreamingPreference;
+    streamingAvailable: boolean;
+  };
   speech: { provider: SpeechProviderId; model: string; available: boolean };
 }
 
 export interface RuntimeAISettingsUpdate {
   textProvider: AIProviderId;
   textModel: string;
+  textStreamingPreference?: StreamingPreference;
   speechProvider: SpeechProviderId;
   speechModel: string;
   openrouterApiKey?: string;

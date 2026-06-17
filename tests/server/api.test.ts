@@ -1,4 +1,7 @@
 import request from "supertest";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExamPackage } from "../../shared/contracts.js";
 import { createApp } from "../../server/app.js";
@@ -62,6 +65,7 @@ const finalReview = {
 class SequenceProvider implements AIProvider {
   readonly model = "fake-model";
   calls: ReviewProviderInput[] = [];
+  readonly capabilities = { chatStreaming: false };
 
   constructor(private readonly responses: unknown[]) {}
 
@@ -77,6 +81,31 @@ class SequenceProvider implements AIProvider {
   async testConnection() {
     return { ok: true, model: this.model };
   }
+}
+
+class StreamingProvider extends SequenceProvider {
+  override readonly capabilities = { chatStreaming: true };
+
+  constructor(private readonly chunks: string[], private readonly failAfterChunks = false) {
+    super([]);
+  }
+
+  override async chat() {
+    return this.chunks.join("");
+  }
+
+  async *chatStream() {
+    for (const chunk of this.chunks) yield chunk;
+    if (this.failAfterChunks) throw new Error("stream failed");
+  }
+}
+
+async function readNdjson(response: request.Response) {
+  return String(response.text)
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as { type: string; delta?: string; error?: string });
 }
 
 async function createSession(app: ReturnType<typeof createApp>) {
@@ -119,6 +148,7 @@ describe("exam API", () => {
       factories: {
         createTextProvider: ({ provider, model }) => ({
           model,
+          capabilities: { chatStreaming: false },
           async chat() {
             textCalls.push({ provider, model, kind: "chat" });
             return "Runtime tutor response";
@@ -234,6 +264,50 @@ describe("exam API", () => {
     expect(chatSpy).toHaveBeenCalledTimes(1);
   });
 
+  it("streams tutor chat chunks and persists the completed turn once", async () => {
+    const provider = new StreamingProvider(["First ", "chunk"]);
+    const app = createApp({ database, exams: [exam], aiProvider: provider });
+    const created = await request(app)
+      .post("/api/exams/exam/questions/q-1/chats")
+      .send({ kind: "tutor", profileId: "neutral" });
+
+    const response = await request(app)
+      .post(`/api/chats/${created.body.id}/messages/stream`)
+      .send({ content: "Explain streaming" });
+
+    expect(response.status).toBe(200);
+    expect(response.headers["content-type"]).toMatch(/application\/x-ndjson/);
+    expect(await readNdjson(response)).toEqual([
+      { type: "chunk", delta: "First " },
+      { type: "chunk", delta: "chunk" },
+      expect.objectContaining({ type: "done" }),
+    ]);
+    const restored = await request(app).get(`/api/chats/${created.body.id}`);
+    expect(restored.body.messages.map((message: { content: string }) => message.content)).toEqual([
+      "Explain streaming",
+      "First chunk",
+    ]);
+  });
+
+  it("keeps a failed streamed tutor turn out of persisted history", async () => {
+    const provider = new StreamingProvider(["partial"], true);
+    const app = createApp({ database, exams: [exam], aiProvider: provider });
+    const created = await request(app)
+      .post("/api/exams/exam/questions/q-1/chats")
+      .send({ kind: "tutor", profileId: "neutral" });
+
+    const response = await request(app)
+      .post(`/api/chats/${created.body.id}/messages/stream`)
+      .send({ content: "Do not persist stream" });
+
+    expect(response.status).toBe(200);
+    expect(await readNdjson(response)).toEqual([
+      { type: "chunk", delta: "partial" },
+      { type: "error", error: "AI tutor stream failed" },
+    ]);
+    expect((await request(app).get(`/api/chats/${created.body.id}`)).body.messages).toEqual([]);
+  });
+
   it("keeps a failed tutor turn out of persisted history", async () => {
     const provider = new SequenceProvider([]);
     vi.spyOn(provider, "chat").mockRejectedValue(new Error("provider failed"));
@@ -320,6 +394,7 @@ describe("exam API", () => {
       factories: {
         createTextProvider: ({ model }) => ({
           model,
+          capabilities: { chatStreaming: false },
           review: vi.fn(),
           chat: vi.fn(),
           testConnection: vi.fn(),
@@ -615,6 +690,32 @@ describe("exam API", () => {
     expect(metadata.status).toBe(200);
     expect(metadata.body.fragments).toBeUndefined();
     expect(page.body.fragments).toHaveLength(1);
+  });
+
+  it("lists and serves files from the materials directory", async () => {
+    const materialsDir = await mkdtemp(join(tmpdir(), "virtex-materials-"));
+    await writeFile(join(materialsDir, "guide.pdf"), Buffer.from("%PDF guide"));
+    await writeFile(join(materialsDir, "terms.txt"), "transaction glossary");
+    const app = createApp({ database, exams: [exam], aiProvider: null, materialsDir });
+
+    const listed = await request(app).get("/api/materials");
+    expect(listed.status).toBe(200);
+    expect(listed.body).toEqual([
+      expect.objectContaining({
+        name: "guide.pdf",
+        size: 10,
+        url: "/materials/guide.pdf",
+      }),
+      expect.objectContaining({
+        name: "terms.txt",
+        size: 20,
+        url: "/materials/terms.txt",
+      }),
+    ]);
+
+    const opened = await request(app).get("/materials/terms.txt");
+    expect(opened.status).toBe(200);
+    expect(opened.text).toBe("transaction glossary");
   });
 
   it("retries invalid AI JSON once", async () => {

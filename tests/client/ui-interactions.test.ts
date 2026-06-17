@@ -6,6 +6,7 @@ describe("UI interaction styles", () => {
     const css = readFileSync("client/src/styles.css", "utf8");
     const rule = css.match(/\.exam-exit-button\s*\{([^}]*)\}/)?.[1] ?? "";
 
+    expect(rule).toMatch(/top:\s*8px/);
     expect(rule).toMatch(/left:\s*18px/);
     expect(rule).not.toMatch(/right:\s*18px/);
   });

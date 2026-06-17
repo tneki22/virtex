@@ -23,6 +23,7 @@ test("root opens two modes and a tutor dialogue survives reload", async ({ page 
   await expect(page).toHaveURL(/\/exams\/mock-database$/);
   await expect(page.getByRole("link", { name: /изучение/i })).toBeVisible();
   await expect(page.getByRole("button", { name: /открыть экзамен/i })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /материалы к экзамену/i })).toBeVisible();
   await expect(page.getByText(/практика/i)).toHaveCount(0);
 
   await page.getByRole("link", { name: /изучение/i }).click();
@@ -235,7 +236,7 @@ test("tablet keeps study side panels as drawers", async ({ page }, testInfo) => 
   await expect(page.getByRole("complementary", { name: /навигация по вопросам/i })).toBeVisible();
   await page.getByRole("button", { name: /закрыть список/i }).click();
   await openRightPanelOnTablet(page);
-  await expect(page.getByRole("tab", { name: /ответы/i })).toBeVisible();
+  await expect(page.getByRole("tab", { name: /эталон/i })).toBeVisible();
 });
 
 test("reduced motion reveals tutor text immediately", async ({ page }) => {

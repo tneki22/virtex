@@ -41,6 +41,10 @@ const exam: ExamDetail = {
 function createApi(): ExamApi {
   return {
     listExams: vi.fn(),
+    listMaterials: vi.fn().mockResolvedValue([
+      { name: "guide.pdf", size: 1200, url: "/materials/guide.pdf" },
+      { name: "terms.txt", size: 18, url: "/materials/terms.txt" },
+    ]),
     getExam: vi.fn().mockResolvedValue(exam),
     getQuestion: vi.fn(),
     getDocument: vi.fn(),
@@ -66,7 +70,13 @@ function createApi(): ExamApi {
         openrouter: { configured: true, source: "environment" },
         groq: { configured: true, source: "environment" },
       },
-      text: { provider: "openrouter", model: "openai/gpt-5-mini", available: true },
+      text: {
+        provider: "openrouter",
+        model: "openai/gpt-5-mini",
+        available: true,
+        streamingPreference: "auto",
+        streamingAvailable: false,
+      },
       speech: { provider: "groq", model: "whisper-large-v3-turbo", available: true },
     }),
     updateAISettings: vi.fn().mockImplementation(async (input) => ({
@@ -74,7 +84,13 @@ function createApi(): ExamApi {
         openrouter: { configured: true, source: "environment" },
         groq: { configured: true, source: input.groqApiKey ? "application" : "environment" },
       },
-      text: { provider: input.textProvider, model: input.textModel, available: true },
+      text: {
+        provider: input.textProvider,
+        model: input.textModel,
+        available: true,
+        streamingPreference: input.textStreamingPreference ?? "auto",
+        streamingAvailable: input.textStreamingPreference !== "off",
+      },
       speech: { provider: input.speechProvider, model: input.speechModel, available: true },
     })),
     testAIText: vi.fn(),
@@ -107,7 +123,22 @@ describe("ExamOverview", () => {
     expect(screen.getByRole("button", { name: /открыть экзамен/i })).toBeInTheDocument();
     expect(screen.queryByText(/практика/i)).not.toBeInTheDocument();
     expect(screen.queryByText(exam.description)).not.toBeInTheDocument();
-    expect(screen.queryByText(/источники/i)).not.toBeInTheDocument();
+  });
+
+  it("shows dynamic exam materials from the materials directory", async () => {
+    const api = createApi();
+    renderOverview(api);
+
+    expect(await screen.findByRole("heading", { name: /материалы к экзамену/i })).toBeInTheDocument();
+    expect(api.listMaterials).toHaveBeenCalled();
+    expect(screen.getByRole("link", { name: /guide\.pdf/i })).toHaveAttribute(
+      "href",
+      "/materials/guide.pdf",
+    );
+    expect(screen.getByRole("link", { name: /terms\.txt/i })).toHaveAttribute(
+      "href",
+      "/materials/terms.txt",
+    );
   });
 
   it("opens history from the top-right action", async () => {
@@ -159,6 +190,7 @@ describe("ExamOverview", () => {
       textModel: "llama-3.3-70b-versatile",
       speechProvider: "openrouter",
       speechModel: "openai/whisper-large-v3",
+      textStreamingPreference: "auto",
       groqApiKey: "new-groq-key",
     });
   });

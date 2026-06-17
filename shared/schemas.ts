@@ -12,6 +12,7 @@ export const examQuestionCountSchema = z.union([
 export const runtimeAISettingsUpdateSchema = z.object({
   textProvider: z.enum(["openrouter", "groq"]),
   textModel: z.string().trim().min(1).max(200),
+  textStreamingPreference: z.enum(["auto", "on", "off"]).default("auto"),
   speechProvider: z.enum(["openrouter", "groq", "disabled"]),
   speechModel: z.string().trim().max(200),
   openrouterApiKey: z.string().trim().min(1).max(1_000).optional(),

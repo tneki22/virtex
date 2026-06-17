@@ -4,6 +4,7 @@ import type {
   RuntimeAISettings,
   RuntimeAISettingsUpdate,
   SpeechProviderId,
+  StreamingPreference,
 } from "../shared/contracts.js";
 import { runtimeAISettingsUpdateSchema } from "../shared/schemas.js";
 import { OpenAICompatibleProvider, type AIProvider } from "./ai.js";
@@ -50,6 +51,7 @@ const SETTING = {
   textModel: "ai.text.model",
   speechProvider: "ai.speech.provider",
   speechModel: "ai.speech.model",
+  textStreaming: "ai.text.streaming",
 } as const;
 
 const defaultFactories: RuntimeAIFactories = {
@@ -108,6 +110,7 @@ export class RuntimeAIService {
     const write = this.options.database.transaction(() => {
       this.writeSetting(SETTING.textProvider, update.textProvider);
       this.writeSetting(SETTING.textModel, update.textModel);
+      this.writeSetting(SETTING.textStreaming, update.textStreamingPreference);
       this.writeSetting(SETTING.speechProvider, update.speechProvider);
       this.writeSetting(SETTING.speechModel, update.speechModel);
       this.updateKey(SETTING.openrouterApiKey, update.openrouterApiKey, update.clearOpenrouterApiKey);
@@ -149,6 +152,7 @@ export class RuntimeAIService {
     };
     const textProvider = parseTextProvider(stored.get(SETTING.textProvider))
       ?? (keys.openrouter.value ? "openrouter" : keys.groq.value ? "groq" : "openrouter");
+    const textStreamingPreference = parseStreamingPreference(stored.get(SETTING.textStreaming)) ?? "auto";
     const speechProvider = parseSpeechProvider(stored.get(SETTING.speechProvider))
       ?? (keys.groq.value ? "groq" : keys.openrouter.value ? "openrouter" : "disabled");
     const textModel = stored.get(SETTING.textModel)
@@ -158,6 +162,22 @@ export class RuntimeAIService {
       : stored.get(SETTING.speechModel) ?? this.options.environment[speechProvider].speechModel;
     const textKey = keys[textProvider].value;
     const speechKey = speechProvider === "disabled" ? undefined : keys[speechProvider].value;
+    const activeTextProvider = textKey
+      ? this.factories.createTextProvider({
+          provider: textProvider,
+          apiKey: textKey,
+          baseUrl: this.options.environment[textProvider].baseUrl,
+          model: textModel,
+        })
+      : null;
+    const activeSpeechProvider = speechProvider !== "disabled" && speechKey
+      ? this.factories.createSpeechProvider({
+          provider: speechProvider,
+          apiKey: speechKey,
+          baseUrl: this.options.environment[speechProvider].baseUrl,
+          model: speechModel,
+        })
+      : null;
 
     return {
       state: {
@@ -165,29 +185,21 @@ export class RuntimeAIService {
           openrouter: keyStatus(keys.openrouter),
           groq: keyStatus(keys.groq),
         },
-        text: { provider: textProvider, model: textModel, available: Boolean(textKey) },
+        text: {
+          provider: textProvider,
+          model: textModel,
+          available: Boolean(textKey),
+          streamingPreference: textStreamingPreference,
+          streamingAvailable: textStreamingPreference !== "off" && Boolean(activeTextProvider?.capabilities.chatStreaming),
+        },
         speech: {
           provider: speechProvider,
           model: speechModel,
           available: speechProvider !== "disabled" && Boolean(speechKey),
         },
       },
-      textProvider: textKey
-        ? this.factories.createTextProvider({
-            provider: textProvider,
-            apiKey: textKey,
-            baseUrl: this.options.environment[textProvider].baseUrl,
-            model: textModel,
-          })
-        : null,
-      speechProvider: speechProvider !== "disabled" && speechKey
-        ? this.factories.createSpeechProvider({
-            provider: speechProvider,
-            apiKey: speechKey,
-            baseUrl: this.options.environment[speechProvider].baseUrl,
-            model: speechModel,
-          })
-        : null,
+      textProvider: activeTextProvider,
+      speechProvider: activeSpeechProvider,
     };
   }
 }
@@ -208,6 +220,10 @@ function parseTextProvider(value: string | undefined): AIProviderId | undefined 
 
 function parseSpeechProvider(value: string | undefined): SpeechProviderId | undefined {
   return value === "openrouter" || value === "groq" || value === "disabled" ? value : undefined;
+}
+
+function parseStreamingPreference(value: string | undefined): StreamingPreference | undefined {
+  return value === "auto" || value === "on" || value === "off" ? value : undefined;
 }
 
 function providerName(provider: AIProviderId) {

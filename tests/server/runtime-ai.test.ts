@@ -23,6 +23,7 @@ function createService() {
   const database = createDatabase(":memory:");
   const createTextProvider = vi.fn((config: { model: string }) => ({
     model: config.model,
+    capabilities: { chatStreaming: false },
     review: vi.fn(),
     chat: vi.fn(),
     testConnection: vi.fn(),
@@ -48,7 +49,13 @@ describe("RuntimeAIService", () => {
         openrouter: { configured: true, source: "environment" },
         groq: { configured: true, source: "environment" },
       },
-      text: { provider: "openrouter", model: "openai/env-text", available: true },
+      text: {
+        provider: "openrouter",
+        model: "openai/env-text",
+        available: true,
+        streamingPreference: "auto",
+        streamingAvailable: false,
+      },
       speech: { provider: "groq", model: "whisper-env", available: true },
     });
     expect(JSON.stringify(service.getState())).not.toContain("env-openrouter-secret");
@@ -99,6 +106,27 @@ describe("RuntimeAIService", () => {
       .get("ai.groq.api_key")).toBeUndefined();
     expect(database.prepare("SELECT value FROM settings WHERE key = ?")
       .get("ai.openrouter.api_key")).toBeUndefined();
+  });
+
+  it("persists the text streaming preference independently from model settings", () => {
+    const { database, service } = createService();
+
+    const updated = service.update({
+      textProvider: "openrouter",
+      textModel: "openai/new-text",
+      speechProvider: "groq",
+      speechModel: "whisper-env",
+      textStreamingPreference: "off",
+    });
+
+    expect(updated.text).toMatchObject({
+      provider: "openrouter",
+      model: "openai/new-text",
+      streamingPreference: "off",
+      streamingAvailable: false,
+    });
+    expect(database.prepare("SELECT value FROM settings WHERE key = ?")
+      .get("ai.text.streaming")).toEqual({ value: "off" });
   });
 
   it("rejects an unavailable selected provider without changing active settings", () => {

@@ -1,7 +1,7 @@
-import { ArrowRight, BookOpenText, GraduationCap, History as HistoryIcon } from "lucide-react";
+import { ArrowRight, BookOpenText, ExternalLink, FileText, GraduationCap, History as HistoryIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import type { ExamQuestionCount } from "../../../shared/contracts.js";
+import type { ExamMaterialFile, ExamQuestionCount } from "../../../shared/contracts.js";
 import type { ExamApi, ExamDetail } from "../api.js";
 import { api as defaultApi } from "../api.js";
 import { AppShell, ErrorState, LoadingState } from "../components/AppShell.js";
@@ -13,12 +13,17 @@ export function ExamOverview({ api = defaultApi }: { api?: ExamApi }) {
   const { examId = "" } = useParams();
   const navigate = useNavigate();
   const [exam, setExam] = useState<ExamDetail | null>(null);
+  const [materials, setMaterials] = useState<ExamMaterialFile[]>([]);
   const [questionCount, setQuestionCount] = useState<ExamQuestionCount>(1);
   const [error, setError] = useState("");
 
   useEffect(() => {
     void api.getExam(examId).then(setExam).catch((reason: Error) => setError(reason.message));
   }, [api, examId]);
+
+  useEffect(() => {
+    void api.listMaterials().then(setMaterials).catch(() => setMaterials([]));
+  }, [api]);
 
   return (
     <AppShell>
@@ -78,10 +83,42 @@ export function ExamOverview({ api = defaultApi }: { api?: ExamApi }) {
                 </button>
               </article>
             </div>
+            {materials.length > 0 && (
+              <section className="exam-materials-section" aria-labelledby="exam-materials-heading">
+                <div>
+                  <p className="eyebrow">Источники</p>
+                  <h2 id="exam-materials-heading">Материалы к экзамену</h2>
+                </div>
+                <div className="exam-materials-list">
+                  {materials.map((material) => (
+                    <a
+                      className="exam-material-link"
+                      href={material.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      key={material.url}
+                    >
+                      <FileText size={18} />
+                      <span>
+                        <strong>{material.name}</strong>
+                        <small>{formatFileSize(material.size)}</small>
+                      </span>
+                      <ExternalLink size={16} />
+                    </a>
+                  ))}
+                </div>
+              </section>
+            )}
             <AIProviderSettings api={api} />
           </section>
         )}
       </main>
     </AppShell>
   );
+}
+
+function formatFileSize(size: number) {
+  if (size < 1024) return `${size} Б`;
+  if (size < 1024 * 1024) return `${Math.round(size / 1024)} КБ`;
+  return `${(size / (1024 * 1024)).toFixed(1)} МБ`;
 }

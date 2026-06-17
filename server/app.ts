@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { readdir, stat } from "node:fs/promises";
+import { basename, resolve } from "node:path";
 import type Database from "better-sqlite3";
 import express from "express";
 import multer from "multer";
@@ -50,6 +52,7 @@ interface CreateAppOptions {
   speechProvider?: SpeechTranscriptionProvider | null;
   now?: () => Date;
   random?: () => number;
+  materialsDir?: string;
 }
 
 interface SessionRow {
@@ -183,6 +186,7 @@ export function createApp(options: CreateAppOptions) {
   const now = options.now ?? (() => new Date());
   const random = options.random ?? Math.random;
   const examMap = new Map(options.exams.map((exam) => [exam.id, exam]));
+  const materialsDir = resolve(options.materialsDir ?? "materials");
 
   function currentAIProvider() {
     return options.runtimeAI?.getTextProvider() ?? options.aiProvider ?? null;
@@ -288,6 +292,27 @@ export function createApp(options: CreateAppOptions) {
     database.prepare("UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?")
       .run(title, updatedAt, sessionId);
     return { title, updatedAt };
+  }
+
+  async function listMaterialFiles() {
+    let entries;
+    try {
+      entries = await readdir(materialsDir, { withFileTypes: true });
+    } catch {
+      return [];
+    }
+    const files = await Promise.all(entries
+      .filter((entry) => entry.isFile())
+      .map(async (entry) => {
+        const filePath = resolve(materialsDir, entry.name);
+        const metadata = await stat(filePath);
+        return {
+          name: entry.name,
+          size: metadata.size,
+          url: `/materials/${encodeURIComponent(entry.name)}`,
+        };
+      }));
+    return files.sort((left, right) => left.name.localeCompare(right.name, "ru"));
   }
 
   function createSessionRecord(input: {
@@ -420,6 +445,26 @@ export function createApp(options: CreateAppOptions) {
         ).length,
       })),
     );
+  });
+
+  app.get("/api/materials", async (_request, response) => {
+    response.json(await listMaterialFiles());
+  });
+
+  app.get("/materials/:fileName", (request, response) => {
+    const fileName = request.params.fileName;
+    if (!fileName || fileName !== basename(fileName)) {
+      return response.status(404).json({ error: "Material not found" });
+    }
+    const filePath = resolve(materialsDir, fileName);
+    if (!filePath.startsWith(`${materialsDir}\\`) && !filePath.startsWith(`${materialsDir}/`)) {
+      return response.status(404).json({ error: "Material not found" });
+    }
+    response.sendFile(filePath, (error) => {
+      if (error && !response.headersSent) {
+        response.status(404).json({ error: "Material not found" });
+      }
+    });
   });
 
   app.get("/api/exams/:id", (request, response) => {
@@ -680,6 +725,59 @@ export function createApp(options: CreateAppOptions) {
     const session = getSession(request.params.id);
     if (session.kind === "exam") return response.status(409).json({ error: "Exam sessions are not study chats" });
     response.json(chatDetail(session));
+  });
+
+  app.post("/api/chats/:id/messages/stream", async (request, response) => {
+    const session = getSession(request.params.id);
+    if (session.kind !== "tutor") return response.status(409).json({ error: "This chat does not accept tutor messages" });
+    if (session.status === "completed") return response.status(409).json({ error: "Chat is completed" });
+    const { content } = z.object({ content: z.string().trim().min(1).max(8_000) }).parse(request.body);
+    const exam = examMap.get(session.exam_id);
+    const question = exam?.questions.find((item) => item.id === session.question_id);
+    const profile = exam?.profiles.find((item) => item.id === session.profile_id);
+    if (!exam || !question || !profile) return response.status(409).json({ error: "Chat content is unavailable" });
+    const aiProvider = currentAIProvider();
+    if (!aiProvider) return response.status(503).json({ error: "AI tutor is not configured" });
+
+    response.status(200);
+    response.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
+    response.setHeader("Cache-Control", "no-cache, no-transform");
+    response.setHeader("X-Accel-Buffering", "no");
+
+    const writeEvent = (event: Record<string, unknown>) => {
+      response.write(`${JSON.stringify(event)}\n`);
+    };
+
+    let assistantContent = "";
+    try {
+      const tutorRequest = buildTutorRequest({
+        exam,
+        question,
+        profile,
+        message: content,
+        dialogue: messagesForSession(session.id),
+      });
+      if (aiProvider.capabilities.chatStreaming && aiProvider.chatStream) {
+        for await (const chunk of aiProvider.chatStream(tutorRequest)) {
+          assistantContent += chunk;
+          writeEvent({ type: "chunk", delta: chunk });
+        }
+      } else {
+        assistantContent = await aiProvider.chat(tutorRequest);
+        writeEvent({ type: "chunk", delta: assistantContent });
+      }
+      const result = database.transaction(() => {
+        const user = insertMessage(session.id, "user", content);
+        const assistant = insertMessage(session.id, "assistant", assistantContent);
+        const activity = touchSession(session.id, content);
+        return { user, assistant, ...activity };
+      })();
+      writeEvent({ type: "done", ...result });
+    } catch {
+      writeEvent({ type: "error", error: "AI tutor stream failed" });
+    } finally {
+      response.end();
+    }
   });
 
   app.post("/api/chats/:id/messages", async (request, response) => {

@@ -55,6 +55,7 @@ const question = {
 function createApi(): ExamApi {
   return {
     listExams: vi.fn(),
+    listMaterials: vi.fn(),
     getExam: vi.fn().mockResolvedValue(exam),
     getQuestion: vi.fn().mockResolvedValue(question),
     getDocument: vi.fn().mockResolvedValue({
@@ -538,7 +539,8 @@ describe("Workspace", () => {
     renderWorkspace(createApi(), "/exams/exam/workspace/q-1?mode=exam");
 
     expect(await screen.findByText("What is a transaction?")).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: /ответы/i })).toBeDisabled();
+    expect(screen.getByRole("tab", { name: /эталон/i })).toBeDisabled();
+    expect(screen.queryByRole("tab", { name: /материалы/i })).not.toBeInTheDocument();
     expect(screen.queryByText(question.referenceAnswer)).not.toBeInTheDocument();
   });
 
@@ -547,9 +549,10 @@ describe("Workspace", () => {
     await screen.findByRole("heading", { level: 1, name: "What is a transaction?" });
 
     expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
-      "Ответы",
+      "Эталон",
       "Заметки",
     ]);
+    expect(screen.queryByRole("tab", { name: /материалы/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: /источники/i })).not.toBeInTheDocument();
     expect(screen.queryByText(/эталон пакета/i)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /новый чат/i })).toBeInTheDocument();

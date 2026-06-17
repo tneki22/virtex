@@ -56,4 +56,63 @@ describe("HttpExamApi", () => {
     }));
     expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/history/exams/run-1", expect.anything());
   });
+
+  it("loads exam materials from the materials endpoint", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify([
+      { name: "guide.pdf", size: 1200, url: "/materials/guide.pdf" },
+    ]), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(new HttpExamApi().listMaterials()).resolves.toEqual([
+      { name: "guide.pdf", size: 1200, url: "/materials/guide.pdf" },
+    ]);
+    expect(fetchMock).toHaveBeenCalledWith("/api/materials", expect.anything());
+  });
+
+  it("streams tutor messages over NDJSON and reports deltas", async () => {
+    const encoder = new TextEncoder();
+    const body = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(`${JSON.stringify({ type: "chunk", delta: "First " })}\n`));
+        controller.enqueue(encoder.encode(`${JSON.stringify({ type: "chunk", delta: "chunk" })}\n`));
+        controller.enqueue(encoder.encode(`${JSON.stringify({
+          type: "done",
+          user: {
+            id: "m-user",
+            sessionId: "chat-1",
+            role: "user",
+            content: "Explain",
+            createdAt: "2026-01-01T00:00:00.000Z",
+          },
+          assistant: {
+            id: "m-assistant",
+            sessionId: "chat-1",
+            role: "assistant",
+            content: "First chunk",
+            createdAt: "2026-01-01T00:00:01.000Z",
+          },
+          title: "Explain",
+          updatedAt: "2026-01-01T00:00:01.000Z",
+        })}\n`));
+        controller.close();
+      },
+    });
+    const fetchMock = vi.fn().mockResolvedValue(new Response(body, {
+      status: 200,
+      headers: { "Content-Type": "application/x-ndjson" },
+    }));
+    const deltas: string[] = [];
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await new HttpExamApi().sendTutorMessage("chat-1", "Explain", {
+      stream: true,
+      onDelta: (delta) => deltas.push(delta),
+    });
+
+    expect(deltas).toEqual(["First ", "chunk"]);
+    expect(result.assistant.content).toBe("First chunk");
+    expect(fetchMock).toHaveBeenCalledWith("/api/chats/chat-1/messages/stream", expect.objectContaining({
+      method: "POST",
+    }));
+  });
 });

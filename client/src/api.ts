@@ -19,6 +19,7 @@ import type {
   TutorTurnResponse,
   RuntimeAISettings,
   RuntimeAISettingsUpdate,
+  ExamMaterialFile,
 } from "../../shared/contracts.js";
 import { calculateExamRunSummary, selectQuestionIds } from "../../shared/exam-run.js";
 
@@ -51,8 +52,15 @@ export interface ReviewResponse extends AIReview {
   xp: number;
 }
 
+export interface TutorMessageOptions {
+  stream?: boolean;
+  signal?: AbortSignal;
+  onDelta?: (delta: string) => void;
+}
+
 export interface ExamApi {
   listExams(): Promise<ExamSummary[]>;
+  listMaterials(): Promise<ExamMaterialFile[]>;
   getExam(examId: string): Promise<ExamDetail>;
   getQuestion(examId: string, questionId: string): Promise<QuestionDetail>;
   getDocument(examId: string, documentId: string, page?: number): Promise<SourceDocument>;
@@ -78,7 +86,11 @@ export interface ExamApi {
     profileId: string;
   }): Promise<StudyChatDetail>;
   getChat(chatId: string): Promise<StudyChatDetail>;
-  sendTutorMessage(chatId: string, content: string): Promise<TutorTurnResponse>;
+  sendTutorMessage(
+    chatId: string,
+    content: string,
+    options?: TutorMessageOptions,
+  ): Promise<TutorTurnResponse>;
   reviewChat(chatId: string, answer: string): Promise<ReviewResponse>;
   transcribe(audio: Blob, questionId: string): Promise<{ text: string; model: string }>;
   sendMessage(sessionId: string, content: string): Promise<SessionMessage>;
@@ -113,6 +125,60 @@ async function jsonRequest<T>(url: string, init?: RequestInit): Promise<T> {
   return body;
 }
 
+type TutorStreamEvent =
+  | { type: "chunk"; delta: string }
+  | ({ type: "done" } & TutorTurnResponse)
+  | { type: "error"; error: string };
+
+async function streamTutorMessage(
+  chatId: string,
+  content: string,
+  options: TutorMessageOptions,
+): Promise<TutorTurnResponse> {
+  const response = await fetch(`/api/chats/${chatId}/messages/stream`, {
+    method: "POST",
+    signal: options.signal,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content }),
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({})) as { error?: string };
+    throw new Error(payload.error ?? `Request failed with ${response.status}`);
+  }
+  if (!response.body) throw new Error("Streaming response is unavailable");
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let doneEvent: TutorTurnResponse | null = null;
+
+  const consumeLine = (line: string) => {
+    if (!line.trim()) return;
+    const event = JSON.parse(line) as TutorStreamEvent;
+    if (event.type === "chunk") {
+      options.onDelta?.(event.delta);
+      return;
+    }
+    if (event.type === "error") {
+      throw new Error(event.error);
+    }
+    const { type: _type, ...turn } = event;
+    doneEvent = turn;
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value, { stream: !done });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) consumeLine(line);
+    if (done) break;
+  }
+  if (buffer) consumeLine(buffer);
+  if (!doneEvent) throw new Error("Streaming response ended without completion");
+  return doneEvent;
+}
+
 function isHistoryData(value: unknown): value is HistoryData {
   if (!value || typeof value !== "object") return false;
   const history = value as Partial<HistoryData>;
@@ -122,6 +188,10 @@ function isHistoryData(value: unknown): value is HistoryData {
 export class HttpExamApi implements ExamApi {
   listExams() {
     return jsonRequest<ExamSummary[]>("/api/exams");
+  }
+
+  listMaterials() {
+    return jsonRequest<ExamMaterialFile[]>("/api/materials");
   }
 
   getExam(examId: string) {
@@ -183,7 +253,8 @@ export class HttpExamApi implements ExamApi {
     return jsonRequest<StudyChatDetail>(`/api/chats/${chatId}`);
   }
 
-  sendTutorMessage(chatId: string, content: string) {
+  sendTutorMessage(chatId: string, content: string, options: TutorMessageOptions = {}) {
+    if (options.stream) return streamTutorMessage(chatId, content, options);
     return jsonRequest<TutorTurnResponse>(`/api/chats/${chatId}/messages`, {
       method: "POST",
       body: JSON.stringify({ content }),
@@ -357,7 +428,13 @@ export class MockExamApi implements ExamApi {
       openrouter: { configured: true, source: "environment" },
       groq: { configured: true, source: "environment" },
     },
-    text: { provider: "openrouter", model: "openai/gpt-5-mini", available: true },
+    text: {
+      provider: "openrouter",
+      model: "openai/gpt-5-mini",
+      available: true,
+      streamingPreference: "auto",
+      streamingAvailable: true,
+    },
     speech: { provider: "groq", model: "whisper-large-v3-turbo", available: true },
   };
 
@@ -410,6 +487,14 @@ export class MockExamApi implements ExamApi {
       questionCount: mockExam.questions.length,
       readyCount: 0,
     }];
+  }
+
+  async listMaterials() {
+    await this.delay();
+    return [
+      { name: "Вопросы к экзамену.pdf", size: 128_623, url: "/materials/%D0%92%D0%BE%D0%BF%D1%80%D0%BE%D1%81%D1%8B%20%D0%BA%20%D1%8D%D0%BA%D0%B7%D0%B0%D0%BC%D0%B5%D0%BD%D1%83.pdf" },
+      { name: "Пособие.pdf", size: 8_227_982, url: "/materials/%D0%9F%D0%BE%D1%81%D0%BE%D0%B1%D0%B8%D0%B5.pdf" },
+    ];
   }
 
   async getExam() {
@@ -605,7 +690,11 @@ export class MockExamApi implements ExamApi {
     };
   }
 
-  async sendTutorMessage(chatId: string, content: string): Promise<TutorTurnResponse> {
+  async sendTutorMessage(
+    chatId: string,
+    content: string,
+    options: TutorMessageOptions = {},
+  ): Promise<TutorTurnResponse> {
     await this.delay();
     const session = this.sessions.get(chatId);
     if (!session || session.kind !== "tutor") throw new Error("Tutor chat not found");
@@ -616,6 +705,11 @@ export class MockExamApi implements ExamApi {
       content: `Разберём это на понятном примере. ${content.includes("пицц") ? "Заказ пиццы проходит как единая операция: либо подтверждаются все шаги, либо заказ отменяется целиком." : "Сначала выделите определение, затем механизм и практическое следствие."}`,
       createdAt: now,
     };
+    if (options.stream) {
+      const midpoint = Math.max(1, Math.floor(assistant.content.length / 2));
+      options.onDelta?.(assistant.content.slice(0, midpoint));
+      options.onDelta?.(assistant.content.slice(midpoint));
+    }
     const title = content.length > 64 ? `${content.slice(0, 61)}…` : content;
     this.chatMessages.set(chatId, [...(this.chatMessages.get(chatId) ?? []), user, assistant]);
     this.sessions.set(chatId, { ...session, title, updatedAt: now });
@@ -796,7 +890,13 @@ export class MockExamApi implements ExamApi {
           source: input.groqApiKey ? "application" : "environment",
         },
       },
-      text: { provider: input.textProvider, model: input.textModel, available: true },
+      text: {
+        provider: input.textProvider,
+        model: input.textModel,
+        available: true,
+        streamingPreference: input.textStreamingPreference ?? this.runtimeAISettings.text.streamingPreference,
+        streamingAvailable: (input.textStreamingPreference ?? this.runtimeAISettings.text.streamingPreference) !== "off",
+      },
       speech: {
         provider: input.speechProvider,
         model: input.speechModel,

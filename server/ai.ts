@@ -10,8 +10,10 @@ export interface ReviewProviderInput {
 
 export interface AIProvider {
   readonly model: string;
+  readonly capabilities: { chatStreaming: boolean };
   review(input: ReviewProviderInput): Promise<unknown>;
   chat(input: TutorRequest): Promise<string>;
+  chatStream?(input: TutorRequest): AsyncIterable<string>;
   testConnection(): Promise<{ ok: boolean; model: string; message?: string }>;
 }
 
@@ -84,6 +86,7 @@ const REVIEW_REPAIR_INSTRUCTION = [
 
 export class OpenAICompatibleProvider implements AIProvider {
   readonly model: string;
+  readonly capabilities = { chatStreaming: true };
   private readonly client: OpenAI;
   private readonly provider: AIProviderId;
 
@@ -148,6 +151,20 @@ export class OpenAICompatibleProvider implements AIProvider {
     const content = response.choices[0]?.message.content?.trim();
     if (!content) throw new Error("AI provider returned an empty response");
     return content;
+  }
+
+  async *chatStream(input: TutorRequest): AsyncIterable<string> {
+    const stream = await this.client.chat.completions.create({
+      model: this.model,
+      messages: input.messages,
+      max_completion_tokens: 1_200,
+      stream: true,
+      ...(this.provider === "openrouter" ? { reasoning_effort: "minimal" as const } : {}),
+    });
+    for await (const chunk of stream) {
+      const delta = chunk.choices[0]?.delta?.content;
+      if (delta) yield delta;
+    }
   }
 
   async testConnection() {
