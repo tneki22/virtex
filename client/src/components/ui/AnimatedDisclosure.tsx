@@ -37,8 +37,8 @@ export function AnimatedDisclosure({
         aria-controls={contentId}
         onClick={toggle}
       >
-        <span>{title}</span>
-        <ChevronDown size={16} aria-hidden="true" />
+        <span className="animated-disclosure-title">{title}</span>
+        <ChevronDown className="animated-disclosure-icon" size={16} aria-hidden="true" />
       </button>
       {expanded && (
         <div id={contentId} className="animated-disclosure-content">

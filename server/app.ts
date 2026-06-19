@@ -43,11 +43,13 @@ import {
 } from "./prompt.js";
 import type { SpeechTranscriptionProvider } from "./transcription.js";
 import type { RuntimeAIService } from "./runtime-ai.js";
+import { RuntimePromptService } from "./runtime-prompts.js";
 
 interface CreateAppOptions {
   database: Database.Database;
   exams: ExamPackage[];
   runtimeAI?: RuntimeAIService;
+  runtimePrompts?: RuntimePromptService;
   aiProvider?: AIProvider | null;
   speechProvider?: SpeechTranscriptionProvider | null;
   now?: () => Date;
@@ -187,6 +189,7 @@ export function createApp(options: CreateAppOptions) {
   const random = options.random ?? Math.random;
   const examMap = new Map(options.exams.map((exam) => [exam.id, exam]));
   const materialsDir = resolve(options.materialsDir ?? "materials");
+  const runtimePrompts = options.runtimePrompts ?? new RuntimePromptService({ database });
 
   function currentAIProvider() {
     return options.runtimeAI?.getTextProvider() ?? options.aiProvider ?? null;
@@ -223,6 +226,18 @@ export function createApp(options: CreateAppOptions) {
       if (question) return { exam, question };
     }
     throw Object.assign(new Error(`Question ${questionId} not found`), { status: 404 });
+  }
+
+  function activeProfiles(exam: ExamPackage) {
+    return runtimePrompts.activeProfiles(exam);
+  }
+
+  function profileIsActive(exam: ExamPackage, profileId: string) {
+    return activeProfiles(exam).some((profile) => profile.id === profileId);
+  }
+
+  function resolveProfile(exam: ExamPackage, profileId: string) {
+    return runtimePrompts.resolveProfile(exam, profileId);
   }
 
   function getSession(sessionId: string): SessionRow {
@@ -472,9 +487,22 @@ export function createApp(options: CreateAppOptions) {
     if (!exam) return response.status(404).json({ error: "Exam not found" });
     response.json({
       ...exam,
+      profiles: activeProfiles(exam),
       documents: exam.documents.map(({ fragments: _fragments, ...document }) => document),
       questions: exam.questions.map(({ referenceAnswer: _answer, ...question }) => question),
     });
+  });
+
+  app.get("/api/exams/:id/prompts", (request, response) => {
+    const exam = examMap.get(request.params.id);
+    if (!exam) return response.status(404).json({ error: "Exam not found" });
+    response.json(runtimePrompts.getSettings(exam));
+  });
+
+  app.put("/api/exams/:id/prompts", (request, response) => {
+    const exam = examMap.get(request.params.id);
+    if (!exam) return response.status(404).json({ error: "Exam not found" });
+    response.json(runtimePrompts.updateSettings(exam, request.body));
   });
 
   app.get("/api/exams/:id/questions/:questionId", (request, response) => {
@@ -534,7 +562,7 @@ export function createApp(options: CreateAppOptions) {
     }).parse(request.body);
     const exam = examMap.get(body.examId);
     if (!exam) return response.status(404).json({ error: "Exam not found" });
-    if (!exam.profiles.some((profile) => profile.id === body.profileId)) {
+    if (!profileIsActive(exam, body.profileId)) {
       return response.status(400).json({ error: "Profile not found" });
     }
 
@@ -662,7 +690,7 @@ export function createApp(options: CreateAppOptions) {
       ? exam.questions.find((candidate) => candidate.id === body.questionId)
       : exam.questions[Math.floor(random() * exam.questions.length)];
     if (!question) return response.status(404).json({ error: "Question not found" });
-    if (!exam.profiles.some((profile) => profile.id === body.profileId)) {
+    if (!profileIsActive(exam, body.profileId)) {
       return response.status(400).json({ error: "Profile not found" });
     }
 
@@ -708,7 +736,7 @@ export function createApp(options: CreateAppOptions) {
       kind: z.enum(["tutor", "review"]),
       profileId: z.string().min(1),
     }).parse(request.body);
-    if (!exam.profiles.some((profile) => profile.id === body.profileId)) {
+    if (!profileIsActive(exam, body.profileId)) {
       return response.status(400).json({ error: "Profile not found" });
     }
     const session = createSessionRecord({
@@ -734,7 +762,7 @@ export function createApp(options: CreateAppOptions) {
     const { content } = z.object({ content: z.string().trim().min(1).max(8_000) }).parse(request.body);
     const exam = examMap.get(session.exam_id);
     const question = exam?.questions.find((item) => item.id === session.question_id);
-    const profile = exam?.profiles.find((item) => item.id === session.profile_id);
+    const profile = exam ? resolveProfile(exam, session.profile_id) : undefined;
     if (!exam || !question || !profile) return response.status(409).json({ error: "Chat content is unavailable" });
     const aiProvider = currentAIProvider();
     if (!aiProvider) return response.status(503).json({ error: "AI tutor is not configured" });
@@ -787,7 +815,7 @@ export function createApp(options: CreateAppOptions) {
     const { content } = z.object({ content: z.string().trim().min(1).max(8_000) }).parse(request.body);
     const exam = examMap.get(session.exam_id);
     const question = exam?.questions.find((item) => item.id === session.question_id);
-    const profile = exam?.profiles.find((item) => item.id === session.profile_id);
+    const profile = exam ? resolveProfile(exam, session.profile_id) : undefined;
     if (!exam || !question || !profile) return response.status(409).json({ error: "Chat content is unavailable" });
     const aiProvider = currentAIProvider();
     if (!aiProvider) return response.status(503).json({ error: "AI tutor is not configured" });
@@ -828,7 +856,7 @@ export function createApp(options: CreateAppOptions) {
     }
     const exam = examMap.get(session.exam_id);
     const question = exam?.questions.find((candidate) => candidate.id === session.question_id);
-    const profile = exam?.profiles.find((candidate) => candidate.id === session.profile_id);
+    const profile = exam ? resolveProfile(exam, session.profile_id) : undefined;
     if (!exam || !question || !profile) {
       throw Object.assign(new Error("Session content is unavailable"), { status: 409 });
     }

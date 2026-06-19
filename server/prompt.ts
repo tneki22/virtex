@@ -7,7 +7,7 @@ import type {
   SourceFragment,
 } from "../shared/contracts.js";
 
-export const PROMPT_VERSION = "persona-review-v8";
+export const PROMPT_VERSION = "persona-review-v9";
 export const REVIEW_SCHEMA_VERSION = "review-schema-v2";
 export const MAX_ESTIMATED_INPUT_TOKENS = 40_000;
 export const MAX_TUTOR_ESTIMATED_INPUT_TOKENS = 35_000;
@@ -112,7 +112,7 @@ function linkedFragments(exam: ExamPackage, question: ExamQuestion): SourceFragm
 }
 
 type ExaminerPersona = NonNullable<ExaminerProfile["persona"]>;
-type PromptMode = "study_tutor" | "study_review" | "exam_final";
+export type PromptMode = "study_tutor" | "study_review" | "exam_final";
 
 function personaFor(profile: ExaminerProfile): ExaminerPersona {
   if (profile.persona) return profile.persona;
@@ -121,7 +121,7 @@ function personaFor(profile: ExaminerProfile): ExaminerPersona {
   return "fomin";
 }
 
-function personaInstructions(profile: ExaminerProfile, mode: PromptMode): string {
+export function defaultPersonaInstructions(profile: ExaminerProfile, mode: PromptMode): string {
   const persona = personaFor(profile);
   if (persona === "magister") {
     return [
@@ -182,6 +182,17 @@ function personaInstructions(profile: ExaminerProfile, mode: PromptMode): string
     "Если экзаменационный ответ слабый, но в нём есть узнаваемое зерно темы, Фомин может натянуть на 3-4 по пятибалльной логике, то есть дать не ноль, но честно объяснить, что это еле спасённый минимум, а не хороший ответ.",
     "Обычно задавай 1-2 уточняющих вопроса, только если режим позволяет clarify.",
   ].join("\n");
+}
+
+const profilePromptKey = {
+  study_tutor: "studyTutor",
+  study_review: "studyReview",
+  exam_final: "examFinal",
+} as const satisfies Record<PromptMode, keyof NonNullable<ExaminerProfile["systemPrompts"]>>;
+
+export function personaInstructions(profile: ExaminerProfile, mode: PromptMode): string {
+  const customPrompt = profile.systemPrompts?.[profilePromptKey[mode]]?.trim();
+  return customPrompt || defaultPersonaInstructions(profile, mode);
 }
 
 function reviewMode(input: BuildReviewRequestInput): PromptMode {

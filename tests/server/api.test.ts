@@ -8,6 +8,7 @@ import { createApp } from "../../server/app.js";
 import type { AIProvider, ReviewProviderInput } from "../../server/ai.js";
 import { createDatabase } from "../../server/database.js";
 import { RuntimeAIService } from "../../server/runtime-ai.js";
+import { RuntimePromptService } from "../../server/runtime-prompts.js";
 
 const exam: ExamPackage = {
   id: "exam",
@@ -417,6 +418,88 @@ describe("exam API", () => {
       speech: { provider: "groq", model: "whisper", available: true },
     });
     expect(JSON.stringify(body)).not.toContain("groq-secret");
+  });
+
+  it("saves prompt settings, resolves active profiles, and keeps archived profiles usable for existing sessions", async () => {
+    const provider = new SequenceProvider([finalReview, finalReview]);
+    const runtimePrompts = new RuntimePromptService({ database });
+    const app = createApp({ database, exams: [exam], aiProvider: provider, runtimePrompts });
+
+    const beforeArchive = await request(app).post("/api/sessions").send({
+      examId: "exam",
+      questionId: "q-1",
+      mode: "study",
+      profileId: "neutral",
+    });
+    expect(beforeArchive.status).toBe(201);
+
+    const settings = await request(app).get("/api/exams/exam/prompts");
+    expect(settings.status).toBe(200);
+    const neutral = settings.body.profiles[0];
+    expect(neutral.systemPrompts.studyReview).toContain("Persona:");
+
+    const saved = await request(app).put("/api/exams/exam/prompts").send({
+      profiles: [
+        {
+          ...neutral,
+          name: "Archived neutral",
+          archived: true,
+          systemPrompts: {
+            ...neutral.systemPrompts,
+            studyReview: "Archived profile review instructions",
+          },
+        },
+        {
+          id: "custom",
+          name: "Custom coach",
+          description: "User-owned examiner profile",
+          tone: "strict",
+          quickPrompts: [{ id: "drill", label: "Drill", prompt: "Ask five short questions" }],
+          systemPrompts: {
+            studyTutor: "Custom tutor instructions",
+            studyReview: "Custom review instructions",
+            examFinal: "Custom exam instructions",
+          },
+        },
+      ],
+    });
+    expect(saved.status).toBe(200);
+    expect(saved.body.profiles.map((profile: { id: string }) => profile.id)).toEqual(["neutral", "custom"]);
+    expect(saved.body.profiles[0]).toMatchObject({ id: "neutral", archived: true });
+
+    const examDetail = await request(app).get("/api/exams/exam");
+    expect(examDetail.body.profiles).toEqual([
+      expect.objectContaining({
+        id: "custom",
+        name: "Custom coach",
+        quickPrompts: [{ id: "drill", label: "Drill", prompt: "Ask five short questions" }],
+      }),
+    ]);
+
+    const newArchivedSession = await request(app).post("/api/sessions").send({
+      examId: "exam",
+      questionId: "q-1",
+      mode: "study",
+      profileId: "neutral",
+    });
+    expect(newArchivedSession.status).toBe(400);
+
+    const customSession = await request(app).post("/api/sessions").send({
+      examId: "exam",
+      questionId: "q-1",
+      mode: "study",
+      profileId: "custom",
+    });
+    expect(customSession.status).toBe(201);
+    await request(app)
+      .post(`/api/sessions/${customSession.body.id}/review`)
+      .send({ answer: "A transaction is atomic." });
+    expect(provider.calls[0].messages[0].content).toContain("Custom review instructions");
+
+    await request(app)
+      .post(`/api/sessions/${beforeArchive.body.id}/review`)
+      .send({ answer: "A transaction is atomic." });
+    expect(provider.calls[1].messages[0].content).toContain("Archived profile review instructions");
   });
 
   it("runs a sequential multi-question exam", async () => {

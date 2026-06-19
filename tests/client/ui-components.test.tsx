@@ -27,6 +27,18 @@ describe("UI primitives", () => {
     expect(onOpenChange).toHaveBeenCalledWith(true);
   });
 
+  it("marks the disclosure icon separately from the title for stateful styling", () => {
+    render(
+      <AnimatedDisclosure title="Profile">
+        <p>Profile body</p>
+      </AnimatedDisclosure>,
+    );
+
+    const button = screen.getByRole("button", { name: "Profile" });
+    expect(button.querySelector(".animated-disclosure-title")).toHaveTextContent("Profile");
+    expect(button.querySelector(".animated-disclosure-icon")).toHaveAttribute("aria-hidden", "true");
+  });
+
   it("supports keyboard navigation between segmented tabs", async () => {
     const user = userEvent.setup();
     const onChange = vi.fn();

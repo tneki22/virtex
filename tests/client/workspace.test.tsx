@@ -97,6 +97,8 @@ function createApi(): ExamApi {
     updateAISettings: vi.fn(),
     testAIText: vi.fn(),
     testAISpeech: vi.fn(),
+    getPromptSettings: vi.fn(),
+    updatePromptSettings: vi.fn(),
   };
 }
 

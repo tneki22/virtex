@@ -48,6 +48,12 @@ export interface QuickPrompt {
   prompt: string;
 }
 
+export interface SystemPromptSet {
+  studyTutor: string;
+  studyReview: string;
+  examFinal: string;
+}
+
 export type ReadinessStatus =
   | "not_started"
   | "review"
@@ -85,7 +91,31 @@ export interface ExaminerProfile {
   description: string;
   tone: "supportive" | "neutral" | "strict";
   persona?: "magister" | "fomin" | "commission";
+  systemPrompts?: SystemPromptSet;
   quickPrompts?: QuickPrompt[];
+  archived?: boolean;
+}
+
+export interface EditableExaminerProfile {
+  id: string;
+  name: string;
+  description: string;
+  tone: "supportive" | "neutral" | "strict";
+  persona?: "magister" | "fomin" | "commission";
+  systemPrompts: SystemPromptSet;
+  quickPrompts: QuickPrompt[];
+  archived?: boolean;
+}
+
+export interface RuntimePromptSettings {
+  examId: string;
+  profiles: EditableExaminerProfile[];
+  defaults: EditableExaminerProfile[];
+  updatedAt?: string;
+}
+
+export interface RuntimePromptSettingsUpdate {
+  profiles: EditableExaminerProfile[];
 }
 
 export interface ExamQuestion {

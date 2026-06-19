@@ -4,6 +4,34 @@ import { describe, expect, it, vi } from "vitest";
 import { App } from "../../client/src/App.js";
 import { AppShell } from "../../client/src/components/AppShell.js";
 
+const runtimePromptSettings = {
+  examId: "database-fundamentals",
+  profiles: [{
+    id: "neutral",
+    name: "Neutral",
+    description: "Neutral examiner",
+    tone: "neutral",
+    systemPrompts: {
+      studyTutor: "Tutor prompt",
+      studyReview: "Review prompt",
+      examFinal: "Exam prompt",
+    },
+    quickPrompts: [],
+  }],
+  defaults: [{
+    id: "neutral",
+    name: "Neutral",
+    description: "Neutral examiner",
+    tone: "neutral",
+    systemPrompts: {
+      studyTutor: "Tutor prompt",
+      studyReview: "Review prompt",
+      examFinal: "Exam prompt",
+    },
+    quickPrompts: [],
+  }],
+};
+
 describe("AppShell", () => {
   it("renders application content without a global header", () => {
     render(
@@ -38,6 +66,9 @@ describe("AppShell", () => {
           },
           speech: { provider: "groq", model: "whisper-large-v3-turbo", available: true },
         }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url === "/api/exams/database-fundamentals/prompts") {
+        return new Response(JSON.stringify(runtimePromptSettings), { status: 200, headers: { "Content-Type": "application/json" } });
       }
       return new Response(JSON.stringify({
         id: "database-fundamentals",
@@ -84,6 +115,9 @@ describe("AppShell", () => {
           },
           speech: { provider: "groq", model: "whisper-large-v3-turbo", available: true },
         }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url === "/api/exams/database-fundamentals/prompts") {
+        return new Response(JSON.stringify(runtimePromptSettings), { status: 200, headers: { "Content-Type": "application/json" } });
       }
       return new Response(JSON.stringify({
         id: "database-fundamentals",

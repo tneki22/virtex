@@ -39,6 +39,27 @@ const exam: ExamDetail = {
 };
 
 function createApi(): ExamApi {
+  const promptSettings = {
+    examId: exam.id,
+    profiles: exam.profiles.map((profile) => ({
+      ...profile,
+      systemPrompts: {
+        studyTutor: `Tutor prompt for ${profile.id}`,
+        studyReview: `Review prompt for ${profile.id}`,
+        examFinal: `Exam prompt for ${profile.id}`,
+      },
+      quickPrompts: profile.quickPrompts ?? [],
+    })),
+    defaults: exam.profiles.map((profile) => ({
+      ...profile,
+      systemPrompts: {
+        studyTutor: `Tutor prompt for ${profile.id}`,
+        studyReview: `Review prompt for ${profile.id}`,
+        examFinal: `Exam prompt for ${profile.id}`,
+      },
+      quickPrompts: profile.quickPrompts ?? [],
+    })),
+  };
   return {
     listExams: vi.fn(),
     listMaterials: vi.fn().mockResolvedValue([
@@ -95,7 +116,12 @@ function createApi(): ExamApi {
     })),
     testAIText: vi.fn(),
     testAISpeech: vi.fn(),
-  };
+    getPromptSettings: vi.fn().mockResolvedValue(promptSettings),
+    updatePromptSettings: vi.fn().mockImplementation(async (_examId, input) => ({
+      ...promptSettings,
+      profiles: input.profiles.filter((profile: { archived?: boolean }) => !profile.archived),
+    })),
+  } as unknown as ExamApi;
 }
 
 function LocationProbe() {
@@ -250,5 +276,49 @@ describe("ExamOverview", () => {
     await user.click(testButton!);
 
     expect(await screen.findByRole("status")).toHaveClass("connection-result", "ok");
+  });
+
+  it("edits prompt profiles and quick prompts from the overview page", async () => {
+    const user = userEvent.setup();
+    const api = createApi();
+    renderOverview(api);
+
+    expect(await screen.findByRole("heading", { name: /промпты личностей/i })).toBeInTheDocument();
+    expect((api as any).getPromptSettings).toHaveBeenCalledWith(exam.id);
+
+    await screen.findByLabelText("Название личности");
+    await user.clear(screen.getByLabelText("Название личности"));
+    await user.type(screen.getByLabelText("Название личности"), "Сократ");
+    await user.click(screen.getByRole("button", { name: /добавить быстрый промпт/i }));
+    await user.type(screen.getAllByLabelText("Название быстрого промпта").at(-1)!, "Пицца");
+    await user.type(screen.getAllByLabelText("Текст быстрого промпта").at(-1)!, "Объясни на пицце");
+    await user.click(screen.getByRole("button", { name: "Сохранить промпты" }));
+
+    expect((api as any).updatePromptSettings).toHaveBeenCalledWith(
+      exam.id,
+      expect.objectContaining({
+        profiles: [
+          expect.objectContaining({
+            name: "Сократ",
+            quickPrompts: expect.arrayContaining([
+              expect.objectContaining({ label: "Пицца", prompt: "Объясни на пицце" }),
+            ]),
+          }),
+        ],
+      }),
+    );
+  });
+
+  it("blocks saving prompt settings with an empty profile name", async () => {
+    const user = userEvent.setup();
+    const api = createApi();
+    renderOverview(api);
+
+    await screen.findByRole("heading", { name: /промпты личностей/i });
+    await screen.findByLabelText("Название личности");
+    await user.clear(screen.getByLabelText("Название личности"));
+
+    expect(screen.getByRole("button", { name: "Сохранить промпты" })).toBeDisabled();
+    expect((api as any).updatePromptSettings).not.toHaveBeenCalled();
   });
 });

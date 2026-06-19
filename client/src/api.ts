@@ -19,6 +19,8 @@ import type {
   TutorTurnResponse,
   RuntimeAISettings,
   RuntimeAISettingsUpdate,
+  RuntimePromptSettings,
+  RuntimePromptSettingsUpdate,
   ExamMaterialFile,
 } from "../../shared/contracts.js";
 import { calculateExamRunSummary, selectQuestionIds } from "../../shared/exam-run.js";
@@ -106,6 +108,11 @@ export interface ExamApi {
   updateAISettings(input: RuntimeAISettingsUpdate): Promise<RuntimeAISettings>;
   testAIText(): Promise<AIConnectionTestResult>;
   testAISpeech(audio: Blob): Promise<AIConnectionTestResult & { text?: string }>;
+  getPromptSettings(examId: string): Promise<RuntimePromptSettings>;
+  updatePromptSettings(
+    examId: string,
+    input: RuntimePromptSettingsUpdate,
+  ): Promise<RuntimePromptSettings>;
 }
 
 async function jsonRequest<T>(url: string, init?: RequestInit): Promise<T> {
@@ -346,6 +353,17 @@ export class HttpExamApi implements ExamApi {
     if (!response.ok) throw new Error(payload.error ?? payload.message ?? "Не удалось проверить распознавание");
     return payload;
   }
+
+  getPromptSettings(examId: string) {
+    return jsonRequest<RuntimePromptSettings>(`/api/exams/${examId}/prompts`);
+  }
+
+  updatePromptSettings(examId: string, input: RuntimePromptSettingsUpdate) {
+    return jsonRequest<RuntimePromptSettings>(`/api/exams/${examId}/prompts`, {
+      method: "PUT",
+      body: JSON.stringify(input),
+    });
+  }
 }
 
 const mockExam: ExamPackage = {
@@ -437,6 +455,19 @@ export class MockExamApi implements ExamApi {
     },
     speech: { provider: "groq", model: "whisper-large-v3-turbo", available: true },
   };
+  private runtimePromptSettings: RuntimePromptSettings = {
+    examId: mockExam.id,
+    profiles: mockExam.profiles.map((profile) => ({
+      ...profile,
+      systemPrompts: profile.systemPrompts ?? mockSystemPrompts(profile.name),
+      quickPrompts: profile.quickPrompts ?? [],
+    })),
+    defaults: mockExam.profiles.map((profile) => ({
+      ...profile,
+      systemPrompts: profile.systemPrompts ?? mockSystemPrompts(profile.name),
+      quickPrompts: profile.quickPrompts ?? [],
+    })),
+  };
 
   constructor(private readonly latency = 550) {
     this.restoreStudyChats();
@@ -501,6 +532,9 @@ export class MockExamApi implements ExamApi {
     await this.delay();
     return {
       ...mockExam,
+      profiles: this.runtimePromptSettings.profiles
+        .filter((profile) => !profile.archived)
+        .map(({ systemPrompts: _systemPrompts, ...profile }) => profile),
       documents: mockExam.documents.map(({ fragments: _fragments, ...document }) => document),
       questions: mockExam.questions.map(({ referenceAnswer: _answer, ...question }) => question),
     };
@@ -918,7 +952,29 @@ export class MockExamApi implements ExamApi {
       : this.runtimeAISettings.speech.provider;
     return { ok: true, provider, model: this.runtimeAISettings.speech.model, text: "Проверка распознавания" };
   }
+  async getPromptSettings() {
+    await this.delay();
+    return structuredClone(this.runtimePromptSettings);
+  }
+
+  async updatePromptSettings(_examId: string, input: RuntimePromptSettingsUpdate) {
+    await this.delay();
+    this.runtimePromptSettings = {
+      ...this.runtimePromptSettings,
+      profiles: structuredClone(input.profiles),
+      updatedAt: new Date().toISOString(),
+    };
+    return structuredClone(this.runtimePromptSettings);
+  }
 }
 
 export const api: ExamApi =
   import.meta.env.VITE_USE_MOCKS === "true" ? new MockExamApi() : new HttpExamApi();
+
+function mockSystemPrompts(name: string) {
+  return {
+    studyTutor: `${name}: разбирай тему как наставник.`,
+    studyReview: `${name}: проверяй учебный ответ.`,
+    examFinal: `${name}: выноси финальный экзаменационный вердикт.`,
+  };
+}

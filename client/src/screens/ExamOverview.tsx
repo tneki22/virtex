@@ -6,6 +6,7 @@ import type { ExamApi, ExamDetail } from "../api.js";
 import { api as defaultApi } from "../api.js";
 import { AppShell, ErrorState, LoadingState } from "../components/AppShell.js";
 import { AIProviderSettings } from "../components/AIProviderSettings.js";
+import { PromptSettingsEditor } from "../components/PromptSettingsEditor.js";
 
 const allowedCounts: ExamQuestionCount[] = [1, 2, 3, 5];
 
@@ -110,6 +111,7 @@ export function ExamOverview({ api = defaultApi }: { api?: ExamApi }) {
               </section>
             )}
             <AIProviderSettings api={api} />
+            <PromptSettingsEditor api={api} examId={exam.id} />
           </section>
         )}
       </main>

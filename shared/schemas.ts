@@ -66,17 +66,69 @@ export const sourceDocumentSchema = z.object({
   fragments: z.array(sourceFragmentSchema).optional(),
 });
 
+export const systemPromptSetSchema = z.object({
+  studyTutor: z.string().trim().min(1).max(12_000),
+  studyReview: z.string().trim().min(1).max(12_000),
+  examFinal: z.string().trim().min(1).max(12_000),
+});
+
+export const quickPromptSchema = z.object({
+  id: z.string().trim().min(1).max(80),
+  label: z.string().trim().min(1).max(80),
+  prompt: z.string().trim().min(1).max(2_000),
+});
+
 export const examinerProfileSchema = z.object({
-  id: z.string().min(1),
-  name: z.string().min(1),
-  description: z.string().min(1),
+  id: z.string().trim().min(1).max(80),
+  name: z.string().trim().min(1).max(80),
+  description: z.string().trim().min(1).max(600),
   tone: z.enum(["supportive", "neutral", "strict"]),
   persona: z.enum(["magister", "fomin", "commission"]).optional(),
-  quickPrompts: z.array(z.object({
-    id: z.string().min(1),
-    label: z.string().min(1),
-    prompt: z.string().min(1),
-  })).optional(),
+  systemPrompts: systemPromptSetSchema.optional(),
+  quickPrompts: z.array(quickPromptSchema).optional(),
+  archived: z.boolean().optional(),
+});
+
+export const editableExaminerProfileSchema = examinerProfileSchema.extend({
+  systemPrompts: systemPromptSetSchema,
+  quickPrompts: z.array(quickPromptSchema),
+}).superRefine((profile, context) => {
+  const quickPromptIds = new Set<string>();
+  for (const prompt of profile.quickPrompts) {
+    if (quickPromptIds.has(prompt.id)) {
+      context.addIssue({
+        code: "custom",
+        path: ["quickPrompts"],
+        message: `Duplicate quick prompt ID: ${prompt.id}`,
+      });
+    }
+    quickPromptIds.add(prompt.id);
+  }
+});
+
+export const runtimePromptSettingsUpdateSchema = z.object({
+  profiles: z.array(editableExaminerProfileSchema).min(1),
+}).superRefine((value, context) => {
+  const activeProfiles = value.profiles.filter((profile) => !profile.archived);
+  if (activeProfiles.length === 0) {
+    context.addIssue({
+      code: "custom",
+      path: ["profiles"],
+      message: "At least one active profile is required",
+    });
+  }
+
+  const profileIds = new Set<string>();
+  for (const profile of value.profiles) {
+    if (profileIds.has(profile.id)) {
+      context.addIssue({
+        code: "custom",
+        path: ["profiles"],
+        message: `Duplicate profile ID: ${profile.id}`,
+      });
+    }
+    profileIds.add(profile.id);
+  }
 });
 
 export const examQuestionSchema = z.object({
