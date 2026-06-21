@@ -35,6 +35,7 @@ import type {
   StudyChatDetail,
   StudyChatSummary,
   StudySession,
+  StreamingPreference,
 } from "../../../shared/contracts.js";
 import { assertExamQuestionCount } from "../../../shared/exam-run.js";
 import { readinessFromScore } from "../../../shared/progress.js";
@@ -47,6 +48,8 @@ import { ExaminerProfilePicker } from "../components/ExaminerProfilePicker.js";
 import { ExamRunSummary } from "../components/ExamRunSummary.js";
 import { MarkdownMessage } from "../components/MarkdownMessage.js";
 import { PanelResizeHandle } from "../components/PanelResizeHandle.js";
+import { ProgressiveMarkdown } from "../components/ProgressiveMarkdown.js";
+import { AnimatedDisclosure, SegmentedTabs, Toast } from "../components/ui/index.js";
 import { MIN_LEFT, MIN_RIGHT, usePanelLayout } from "../hooks/usePanelLayout.js";
 import { useVoiceInput } from "../hooks/useVoiceInput.js";
 import { clearExamRunDrafts } from "../exam-drafts.js";
@@ -56,6 +59,7 @@ type DialogueTurn = {
   id: string;
   role: "student" | "examiner";
   text: string;
+  streaming?: boolean;
 };
 
 const readinessLabels = {
@@ -126,6 +130,9 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
   const [newChatOpen, setNewChatOpen] = useState(false);
   const [newChatKind, setNewChatKind] = useState<Exclude<SessionKind, "exam"> | null>(null);
   const [loadingChat, setLoadingChat] = useState(false);
+  const [textStreamingPreference, setTextStreamingPreference] = useState<StreamingPreference>("auto");
+  const [progressiveTurnId, setProgressiveTurnId] = useState("");
+  const [toast, setToast] = useState("");
   const voiceInput = useVoiceInput({
     api,
     questionId: question?.id ?? "",
@@ -145,6 +152,16 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
   }, [api, examId]);
 
   useEffect(() => {
+    void Promise.resolve(api.getAISettings())
+      .then((settings) => {
+        if (settings) setTextStreamingPreference(settings.text.streamingPreference);
+      })
+      .catch(() => {
+        setTextStreamingPreference("auto");
+      });
+  }, [api]);
+
+  useEffect(() => {
     if (!runId || examRun?.id === runId) return;
     void api.getExamRun(runId)
       .then((step) => {
@@ -152,6 +169,7 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
         setExamSummary(step.summary ?? null);
         setProfileId(step.run.profileId);
         if (step.session) {
+          if (!step.session.questionId) throw new Error("Экзаменационная сессия не привязана к вопросу");
           setSession(step.session);
           setSelectedQuestionId(step.session.questionId);
           if (routeQuestionId !== step.session.questionId) {
@@ -180,6 +198,7 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
     }
     setReview(null);
     setDialogueTurns([]);
+    setProgressiveTurnId("");
     setCompleted(false);
     setActiveChat(null);
     setChatHistory([]);
@@ -303,6 +322,12 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
     return () => window.removeEventListener("resize", expandForNarrowViewport);
   }, []);
 
+  useEffect(() => {
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToast(""), 2200);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
+
   async function ensureSession(): Promise<StudySession> {
     if (session && session.questionId === question?.id) return session;
     if (!question) throw new Error("Вопрос ещё не загружен");
@@ -318,6 +343,7 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
 
   function restoreChat(chat: StudyChatDetail) {
     setActiveChat(chat);
+    setProgressiveTurnId("");
     setProfileId(chat.profileId);
     setSession(null);
     setDialogueTurns(chat.messages.map((message) => ({
@@ -375,17 +401,37 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
       role: "student",
       text: submittedAnswer,
     };
+    const pendingAssistantTurnId = crypto.randomUUID();
     setDialogueTurns((turns) => [...turns, submittedTurn]);
     setLoadingReview(true);
     setError("");
     try {
       if (mode === "study" && !activeChat) throw new Error("Сначала создайте чат");
       if (mode === "study" && activeChat?.kind === "tutor") {
-        const turn = await api.sendTutorMessage(activeChat.id, submittedAnswer);
-        setDialogueTurns((turns) => [
-          ...turns,
-          { id: turn.assistant.id, role: "examiner", text: turn.assistant.content },
-        ]);
+        const useStreaming = textStreamingPreference !== "off";
+        if (useStreaming) {
+          setDialogueTurns((turns) => [
+            ...turns,
+            { id: pendingAssistantTurnId, role: "examiner", text: "", streaming: true },
+          ]);
+        }
+        const turn = await api.sendTutorMessage(activeChat.id, submittedAnswer, {
+          stream: useStreaming,
+          onDelta: (delta) => {
+            setDialogueTurns((turns) => turns.map((item) => item.id === pendingAssistantTurnId
+              ? { ...item, text: item.text + delta, streaming: true }
+              : item));
+          },
+        });
+        setProgressiveTurnId(useStreaming ? "" : turn.assistant.id);
+        setDialogueTurns((turns) => useStreaming
+          ? turns.map((item) => item.id === pendingAssistantTurnId
+            ? { id: turn.assistant.id, role: "examiner", text: turn.assistant.content }
+            : item)
+          : [
+              ...turns,
+              { id: turn.assistant.id, role: "examiner", text: turn.assistant.content },
+            ]);
         setActiveChat({
           ...activeChat,
           title: turn.title,
@@ -403,10 +449,12 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
       const result = mode === "study"
         ? await api.reviewChat(currentSession.id, submittedAnswer)
         : await api.review(currentSession.id, submittedAnswer);
+      const assistantTurnId = crypto.randomUUID();
       setReview(result);
+      setProgressiveTurnId(assistantTurnId);
       setDialogueTurns((turns) => [
         ...turns,
-        { id: crypto.randomUUID(), role: "examiner", text: result.examinerMessage },
+        { id: assistantTurnId, role: "examiner", text: result.examinerMessage },
       ]);
       if (activeChat && mode === "study") {
         const now = new Date().toISOString();
@@ -424,7 +472,7 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
           createdAt: now,
         };
         const assistantMessage = {
-          id: crypto.randomUUID(),
+          id: assistantTurnId,
           sessionId: activeChat.id,
           role: "assistant" as const,
           content: result.examinerMessage,
@@ -475,7 +523,9 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
         localStorage.removeItem(draftKey);
       }
     } catch (reason) {
-      setDialogueTurns((turns) => turns.filter((turn) => turn.id !== submittedTurn.id));
+      setDialogueTurns((turns) => turns.filter((turn) => (
+        turn.id !== submittedTurn.id && turn.id !== pendingAssistantTurnId
+      )));
       setError(reason instanceof Error ? reason.message : "Не удалось проверить ответ");
     } finally {
       setLoadingReview(false);
@@ -516,6 +566,7 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
   async function saveNote() {
     if (!question) return;
     await api.updateNote(question.id, note);
+    setToast("Заметка сохранена");
   }
 
   async function startExamRun() {
@@ -554,6 +605,7 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
         return;
       }
       if (!step.session) throw new Error("Сервер не вернул следующий вопрос");
+      if (!step.session.questionId) throw new Error("Экзаменационная сессия не привязана к вопросу");
       setSession(step.session);
       setSelectedQuestionId(step.session.questionId);
       setReview(null);
@@ -695,7 +747,9 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
               <p className="eyebrow">Вопрос {question.officialNumber} · {question.groupTitle}</p>
               <h1>{question.displayText}</h1>
               {question.officialText !== question.displayText && (
-                <details className="official-wording"><summary>Официальная формулировка</summary><p>{question.officialText}</p></details>
+                <AnimatedDisclosure title="Официальная формулировка" className="official-wording">
+                  <p>{question.officialText}</p>
+                </AnimatedDisclosure>
               )}
             </div>
             <button className="icon-button bookmark-button" onClick={() => void toggleBookmark()} aria-label={question.bookmarked ? "Убрать из закладок" : "Добавить в закладки"} aria-pressed={question.bookmarked}>
@@ -786,7 +840,11 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
                 {dialogueTurns.map((turn) => (
                   <div className={`dialogue-turn role-${turn.role}`} key={turn.id}>
                     <strong>{turn.role === "student" ? "Вы" : "Экзаменатор"}</strong>
-                    <MarkdownMessage text={turn.text} />
+                    {turn.streaming && !turn.text
+                      ? <span className="typing-indicator" aria-label="Экзаменатор печатает"><span /><span /><span /></span>
+                      : turn.role === "examiner" && !turn.streaming
+                      ? <ProgressiveMarkdown text={turn.text} active={turn.id === progressiveTurnId} />
+                      : <MarkdownMessage text={turn.text} />}
                   </div>
                 ))}
               </div>
@@ -876,10 +934,16 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
         <aside id="reference-panel" className={`reference-panel ${rightOpen ? "is-open" : ""} ${rightFullscreen ? "is-fullscreen" : ""}`} aria-label="Ответы и заметки">
           <div className="panel-mobile-head"><strong>Ответы и заметки</strong><button className="icon-button" onClick={() => { setRightOpen(false); setRightFullscreen(false); }} aria-label="Закрыть панель"><X size={18} /></button></div>
           <div className="reference-toolbar">
-            <div className="reference-tabs" role="tablist">
-              <button id="answers-tab" role="tab" aria-controls="reference-tabpanel" aria-selected={rightTab === "answers"} tabIndex={rightTab === "answers" ? 0 : -1} disabled={answersLocked} onClick={() => setRightTab("answers")}>Ответы</button>
-              <button id="notes-tab" role="tab" aria-controls="reference-tabpanel" aria-selected={rightTab === "notes"} tabIndex={rightTab === "notes" ? 0 : -1} onClick={() => setRightTab("notes")}>Заметки</button>
-            </div>
+            <SegmentedTabs<RightTab>
+              label="Материалы вопроса"
+              className="reference-tabs"
+              value={rightTab}
+              onChange={setRightTab}
+              tabs={[
+                { value: "answers", label: "Эталон", disabled: answersLocked },
+                { value: "notes", label: "Заметки" },
+              ]}
+            />
             {rightFullscreen && mode === "study" && (
               <nav className="reference-question-navigation" aria-label="Навигация между вопросами">
                 <button
@@ -910,7 +974,7 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
               {rightFullscreen ? <Minimize2 size={17} /> : <Maximize2 size={17} />}
             </button>
           </div>
-          <div id="reference-tabpanel" className="reference-content" role="tabpanel" aria-labelledby={rightTab === "answers" ? "answers-tab" : "notes-tab"}>
+          <div id="reference-tabpanel" className="reference-content" role="tabpanel" aria-label={rightTab === "answers" ? "Эталон" : "Заметки"}>
             {rightTab === "answers" && (
               answersLocked ? (
                 <div className="locked-state"><MessageSquare size={24} /><h2>Ответы закрыты</h2><p>Эталон станет доступен после итоговой проверки текущего вопроса.</p></div>
@@ -933,6 +997,7 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
         </aside>
       </div>
       {!rightFullscreen && ((mode === "study" && leftOpen) || rightOpen) && <button className="panel-backdrop tablet-only" aria-label="Закрыть панель" onClick={() => { setLeftOpen(false); setRightOpen(false); }} />}
+      {toast && <Toast message={toast} />}
       {exitDialogOpen && (
         <ConfirmDialog
           title="Прервать экзамен?"

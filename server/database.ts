@@ -28,8 +28,10 @@ export function createDatabase(filePath: string): Database.Database {
       id TEXT PRIMARY KEY,
       exam_id TEXT NOT NULL,
       question_id TEXT NOT NULL,
+      scope_type TEXT NOT NULL DEFAULT 'question' CHECK (scope_type IN ('question', 'document')),
+      document_id TEXT,
       mode TEXT NOT NULL,
-      kind TEXT NOT NULL DEFAULT 'review' CHECK (kind IN ('tutor', 'review', 'exam')),
+      kind TEXT NOT NULL DEFAULT 'review' CHECK (kind IN ('tutor', 'review', 'exam', 'document')),
       title TEXT NOT NULL DEFAULT 'Проверка ответа',
       profile_id TEXT NOT NULL,
       status TEXT NOT NULL,
@@ -45,6 +47,11 @@ export function createDatabase(filePath: string): Database.Database {
       role TEXT NOT NULL,
       content TEXT NOT NULL,
       created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS message_sources (
+      message_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+      sources_json TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS attempts (
@@ -94,7 +101,33 @@ export function createDatabase(filePath: string): Database.Database {
       UNIQUE(run_id, question_id)
     );
 
+    CREATE TABLE IF NOT EXISTS rag_documents (
+      exam_id TEXT NOT NULL,
+      package_version TEXT NOT NULL,
+      document_id TEXT NOT NULL,
+      embedding_model TEXT NOT NULL,
+      content_hash TEXT NOT NULL,
+      fragment_count INTEGER NOT NULL,
+      indexed_at TEXT NOT NULL,
+      PRIMARY KEY (exam_id, package_version, document_id, embedding_model)
+    );
+
+    CREATE TABLE IF NOT EXISTS rag_embeddings (
+      exam_id TEXT NOT NULL,
+      package_version TEXT NOT NULL,
+      document_id TEXT NOT NULL,
+      fragment_id TEXT NOT NULL,
+      embedding_model TEXT NOT NULL,
+      page INTEGER NOT NULL,
+      ordinal INTEGER NOT NULL,
+      text_hash TEXT NOT NULL,
+      vector BLOB NOT NULL,
+      PRIMARY KEY (exam_id, package_version, document_id, fragment_id, embedding_model)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_message_sources_message ON message_sources(message_id);
+    CREATE INDEX IF NOT EXISTS idx_rag_embeddings_document ON rag_embeddings(exam_id, package_version, document_id, embedding_model);
     CREATE INDEX IF NOT EXISTS idx_attempts_question ON attempts(question_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_reviews_session ON reviews(session_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_exam_run_items_run ON exam_run_items(run_id, position);
@@ -110,6 +143,12 @@ export function createDatabase(filePath: string): Database.Database {
   if (!sessionColumnNames.has("exam_run_position")) {
     database.exec("ALTER TABLE sessions ADD COLUMN exam_run_position INTEGER");
   }
+  if (!sessionColumnNames.has("scope_type")) {
+    database.exec("ALTER TABLE sessions ADD COLUMN scope_type TEXT NOT NULL DEFAULT 'question'");
+  }
+  if (!sessionColumnNames.has("document_id")) {
+    database.exec("ALTER TABLE sessions ADD COLUMN document_id TEXT");
+  }
   if (!sessionColumnNames.has("kind")) {
     database.exec("ALTER TABLE sessions ADD COLUMN kind TEXT NOT NULL DEFAULT 'review'");
   }
@@ -118,6 +157,49 @@ export function createDatabase(filePath: string): Database.Database {
   }
   if (!sessionColumnNames.has("updated_at")) {
     database.exec("ALTER TABLE sessions ADD COLUMN updated_at TEXT");
+  }
+  const sessionSchema = database
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'sessions'")
+    .get() as { sql: string } | undefined;
+  if (sessionSchema?.sql.includes("CHECK (kind IN ('tutor', 'review', 'exam'))")) {
+    database.pragma("foreign_keys = OFF");
+    database.exec(`
+      ALTER TABLE sessions RENAME TO sessions_old;
+
+      CREATE TABLE sessions (
+        id TEXT PRIMARY KEY,
+        exam_id TEXT NOT NULL,
+        question_id TEXT NOT NULL,
+        scope_type TEXT NOT NULL DEFAULT 'question' CHECK (scope_type IN ('question', 'document')),
+        document_id TEXT,
+        mode TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'review' CHECK (kind IN ('tutor', 'review', 'exam', 'document')),
+        title TEXT NOT NULL DEFAULT 'РџСЂРѕРІРµСЂРєР° РѕС‚РІРµС‚Р°',
+        profile_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        follow_up_count INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT '',
+        completed_at TEXT,
+        exam_run_id TEXT REFERENCES exam_runs(id),
+        exam_run_position INTEGER
+      );
+
+      INSERT INTO sessions (
+        id, exam_id, question_id, scope_type, document_id, mode, kind, title,
+        profile_id, status, follow_up_count, created_at, updated_at, completed_at,
+        exam_run_id, exam_run_position
+      )
+      SELECT
+        id, exam_id, question_id, COALESCE(NULLIF(scope_type, ''), 'question'), document_id,
+        mode, kind, title, profile_id, status, follow_up_count, created_at,
+        COALESCE(NULLIF(updated_at, ''), completed_at, created_at), completed_at,
+        exam_run_id, exam_run_position
+      FROM sessions_old;
+
+      DROP TABLE sessions_old;
+    `);
+    database.pragma("foreign_keys = ON");
   }
   database.exec(`
     UPDATE sessions

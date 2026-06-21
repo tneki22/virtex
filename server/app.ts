@@ -1,17 +1,22 @@
 import { randomUUID } from "node:crypto";
+import { readdir, stat } from "node:fs/promises";
+import { basename, resolve } from "node:path";
 import type Database from "better-sqlite3";
 import express from "express";
 import multer from "multer";
 import { z } from "zod";
 import type {
   AIReview,
+  DocumentStudyDocument,
   ExamHistoryDetail,
   ExamHistorySummary,
   ExamPackage,
   ExamQuestion,
   HistoryData,
+  RetrievedSourceReference,
   SessionKind,
   SessionMessage,
+  SourceDocument,
   StudyAttemptHistoryEntry,
   StudySession,
 } from "../shared/contracts.js";
@@ -34,6 +39,7 @@ import {
   getExamRun,
 } from "./exam-runs.js";
 import {
+  buildDocumentTutorRequest,
   buildReviewRequest,
   buildTutorRequest,
   PROMPT_VERSION,
@@ -41,21 +47,30 @@ import {
 } from "./prompt.js";
 import type { SpeechTranscriptionProvider } from "./transcription.js";
 import type { RuntimeAIService } from "./runtime-ai.js";
+import { RuntimePromptService } from "./runtime-prompts.js";
+import type { EmbeddingProvider } from "./ai.js";
+import { DocumentRetrievalService } from "./document-retrieval.js";
+import { DEFAULT_DOCUMENT_RAG_PROFILE } from "./document-rag-profile.js";
 
 interface CreateAppOptions {
   database: Database.Database;
   exams: ExamPackage[];
   runtimeAI?: RuntimeAIService;
+  runtimePrompts?: RuntimePromptService;
   aiProvider?: AIProvider | null;
+  embeddingProvider?: EmbeddingProvider | null;
   speechProvider?: SpeechTranscriptionProvider | null;
   now?: () => Date;
   random?: () => number;
+  materialsDir?: string;
 }
 
 interface SessionRow {
   id: string;
   exam_id: string;
   question_id: string;
+  scope_type: "question" | "document";
+  document_id: string | null;
   mode: string;
   kind: SessionKind;
   title: string;
@@ -79,7 +94,9 @@ function sessionFromRow(row: SessionRow) {
   return {
     id: row.id,
     examId: row.exam_id,
-    questionId: row.question_id,
+    scopeType: row.scope_type ?? "question",
+    ...(row.question_id ? { questionId: row.question_id } : {}),
+    ...(row.document_id ? { documentId: row.document_id } : {}),
     mode: normalizeStudyMode(row.mode),
     kind: row.kind,
     title: row.title,
@@ -90,6 +107,13 @@ function sessionFromRow(row: SessionRow) {
     updatedAt: row.updated_at,
     ...(row.completed_at ? { completedAt: row.completed_at } : {}),
   };
+}
+
+function isSearchableDocument(document: SourceDocument) {
+  if (document.searchable !== undefined) return document.searchable;
+  if (document.role !== undefined) return document.role !== "questions";
+  const searchableHint = `${document.id} ${document.title}`.toLocaleLowerCase("ru");
+  return !/(^|[-_\s])questions?($|[-_\s])|вопрос/u.test(searchableHint);
 }
 
 function validateProviderResponse(
@@ -183,6 +207,8 @@ export function createApp(options: CreateAppOptions) {
   const now = options.now ?? (() => new Date());
   const random = options.random ?? Math.random;
   const examMap = new Map(options.exams.map((exam) => [exam.id, exam]));
+  const materialsDir = resolve(options.materialsDir ?? "materials");
+  const runtimePrompts = options.runtimePrompts ?? new RuntimePromptService({ database });
 
   function currentAIProvider() {
     return options.runtimeAI?.getTextProvider() ?? options.aiProvider ?? null;
@@ -190,6 +216,18 @@ export function createApp(options: CreateAppOptions) {
 
   function currentSpeechProvider() {
     return options.runtimeAI?.getSpeechProvider() ?? options.speechProvider ?? null;
+  }
+
+  function currentEmbeddingProvider() {
+    return options.runtimeAI?.getEmbeddingProvider() ?? options.embeddingProvider ?? null;
+  }
+
+  function documentRetrieval() {
+    return new DocumentRetrievalService({
+      database,
+      embeddingProvider: currentEmbeddingProvider(),
+      now,
+    });
   }
 
   app.use(express.json({ limit: "1mb" }));
@@ -221,6 +259,18 @@ export function createApp(options: CreateAppOptions) {
     throw Object.assign(new Error(`Question ${questionId} not found`), { status: 404 });
   }
 
+  function activeProfiles(exam: ExamPackage) {
+    return runtimePrompts.activeProfiles(exam);
+  }
+
+  function profileIsActive(exam: ExamPackage, profileId: string) {
+    return activeProfiles(exam).some((profile) => profile.id === profileId);
+  }
+
+  function resolveProfile(exam: ExamPackage, profileId: string) {
+    return runtimePrompts.resolveProfile(exam, profileId);
+  }
+
   function getSession(sessionId: string): SessionRow {
     const session = database
       .prepare("SELECT * FROM sessions WHERE id = ?")
@@ -229,19 +279,30 @@ export function createApp(options: CreateAppOptions) {
     return session;
   }
 
-  function insertMessage(sessionId: string, role: MessageRow["role"], content: string) {
+  function insertMessage(
+    sessionId: string,
+    role: MessageRow["role"],
+    content: string,
+    sources?: RetrievedSourceReference[],
+  ) {
     const message = {
       id: randomUUID(),
       sessionId,
       role,
       content,
       createdAt: timestamp(),
+      ...(sources && sources.length > 0 ? { sources } : {}),
     };
     database
       .prepare(
         "INSERT INTO messages (id, session_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)",
       )
       .run(message.id, message.sessionId, message.role, message.content, message.createdAt);
+    if (sources && sources.length > 0) {
+      database
+        .prepare("INSERT INTO message_sources (message_id, sources_json) VALUES (?, ?)")
+        .run(message.id, JSON.stringify(sources));
+    }
     return message;
   }
 
@@ -255,7 +316,15 @@ export function createApp(options: CreateAppOptions) {
       role: row.role,
       content: row.content,
       createdAt: row.created_at,
+      ...messageSources(row.id),
     }));
+  }
+
+  function messageSources(messageId: string): { sources?: RetrievedSourceReference[] } {
+    const row = database
+      .prepare("SELECT sources_json FROM message_sources WHERE message_id = ?")
+      .get(messageId) as { sources_json: string } | undefined;
+    return row ? { sources: JSON.parse(row.sources_json) as RetrievedSourceReference[] } : {};
   }
 
   function reviewsForSession(sessionId: string): AIReview[] {
@@ -280,7 +349,11 @@ export function createApp(options: CreateAppOptions) {
 
   function touchSession(sessionId: string, content?: string) {
     const current = getSession(sessionId);
-    const defaultTitle = current.kind === "tutor" ? "Разбор темы" : "Проверка ответа";
+    const defaultTitle = current.kind === "document"
+      ? "Document chat"
+      : current.kind === "tutor"
+        ? "Разбор темы"
+        : "Проверка ответа";
     const title = content && current.title === defaultTitle
       ? titleFromMessage(content)
       : current.title;
@@ -290,21 +363,53 @@ export function createApp(options: CreateAppOptions) {
     return { title, updatedAt };
   }
 
+  async function listMaterialFiles() {
+    let entries;
+    try {
+      entries = await readdir(materialsDir, { withFileTypes: true });
+    } catch {
+      return [];
+    }
+    const files = await Promise.all(entries
+      .filter((entry) => entry.isFile())
+      .map(async (entry) => {
+        const filePath = resolve(materialsDir, entry.name);
+        const metadata = await stat(filePath);
+        return {
+          name: entry.name,
+          size: metadata.size,
+          url: `/materials/${encodeURIComponent(entry.name)}`,
+        };
+      }));
+    return files.sort((left, right) => left.name.localeCompare(right.name, "ru"));
+  }
+
   function createSessionRecord(input: {
     examId: string;
-    questionId: string;
+    questionId?: string;
+    documentId?: string;
     mode: StudySession["mode"];
     kind?: SessionKind;
     title?: string;
     profileId: string;
   }): StudySession {
-    const kind = input.kind ?? (input.mode === "exam" ? "exam" : "review");
-    const title = input.title ?? (kind === "tutor" ? "Разбор темы" : kind === "exam" ? "Экзамен" : "Проверка ответа");
+    const scopeType = input.documentId ? "document" : "question";
+    const kind = input.kind ?? (scopeType === "document" ? "document" : input.mode === "exam" ? "exam" : "review");
+    const defaultTitle = kind === "document"
+      ? "Document chat"
+      : kind === "tutor"
+        ? "Разбор темы"
+        : kind === "exam"
+          ? "Экзамен"
+          : "Проверка ответа";
+    const title = input.title ?? defaultTitle;
     const createdAt = timestamp();
     const session: StudySession = {
       id: randomUUID(),
       examId: input.examId,
-      questionId: input.questionId,
+      scopeType,
+      ...(input.questionId ? { questionId: input.questionId } : {}),
+      ...(input.documentId ? { documentId: input.documentId } : {}),
       mode: input.mode,
       kind,
       title,
@@ -316,12 +421,14 @@ export function createApp(options: CreateAppOptions) {
     };
     database.prepare(`
       INSERT INTO sessions
-        (id, exam_id, question_id, mode, kind, title, profile_id, status, follow_up_count, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (id, exam_id, question_id, scope_type, document_id, mode, kind, title, profile_id, status, follow_up_count, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       session.id,
       session.examId,
-      session.questionId,
+      session.questionId ?? "",
+      scopeType,
+      session.documentId ?? null,
       session.mode,
       session.kind,
       session.title,
@@ -422,14 +529,47 @@ export function createApp(options: CreateAppOptions) {
     );
   });
 
+  app.get("/api/materials", async (_request, response) => {
+    response.json(await listMaterialFiles());
+  });
+
+  app.get("/materials/:fileName", (request, response) => {
+    const fileName = request.params.fileName;
+    if (!fileName || fileName !== basename(fileName)) {
+      return response.status(404).json({ error: "Material not found" });
+    }
+    const filePath = resolve(materialsDir, fileName);
+    if (!filePath.startsWith(`${materialsDir}\\`) && !filePath.startsWith(`${materialsDir}/`)) {
+      return response.status(404).json({ error: "Material not found" });
+    }
+    response.sendFile(filePath, (error) => {
+      if (error && !response.headersSent) {
+        response.status(404).json({ error: "Material not found" });
+      }
+    });
+  });
+
   app.get("/api/exams/:id", (request, response) => {
     const exam = examMap.get(request.params.id);
     if (!exam) return response.status(404).json({ error: "Exam not found" });
     response.json({
       ...exam,
+      profiles: activeProfiles(exam),
       documents: exam.documents.map(({ fragments: _fragments, ...document }) => document),
       questions: exam.questions.map(({ referenceAnswer: _answer, ...question }) => question),
     });
+  });
+
+  app.get("/api/exams/:id/prompts", (request, response) => {
+    const exam = examMap.get(request.params.id);
+    if (!exam) return response.status(404).json({ error: "Exam not found" });
+    response.json(runtimePrompts.getSettings(exam));
+  });
+
+  app.put("/api/exams/:id/prompts", (request, response) => {
+    const exam = examMap.get(request.params.id);
+    if (!exam) return response.status(404).json({ error: "Exam not found" });
+    response.json(runtimePrompts.updateSettings(exam, request.body));
   });
 
   app.get("/api/exams/:id/questions/:questionId", (request, response) => {
@@ -481,6 +621,78 @@ export function createApp(options: CreateAppOptions) {
     });
   });
 
+  function documentStudyDocuments(exam: ExamPackage): DocumentStudyDocument[] {
+    return exam.documents
+      .filter(isSearchableDocument)
+      .map(({ fragments: _fragments, ...document }) => ({
+        ...document,
+        searchable: true,
+        indexStatus: documentRetrieval().status(exam, document.id),
+      }));
+  }
+
+  function findSearchableDocument(exam: ExamPackage, documentId: string) {
+    const document = exam.documents.find((candidate) => candidate.id === documentId);
+    if (!document || !isSearchableDocument(document)) {
+      throw Object.assign(new Error("Document not found"), { status: 404 });
+    }
+    return document;
+  }
+
+  app.get("/api/exams/:id/document-study/documents", (request, response) => {
+    const exam = examMap.get(request.params.id);
+    if (!exam) return response.status(404).json({ error: "Exam not found" });
+    response.json(documentStudyDocuments(exam));
+  });
+
+  app.post("/api/exams/:id/documents/:documentId/index", async (request, response) => {
+    const exam = examMap.get(request.params.id);
+    if (!exam) return response.status(404).json({ error: "Exam not found" });
+    findSearchableDocument(exam, request.params.documentId);
+    response.json(await documentRetrieval().prepare(exam, request.params.documentId));
+  });
+
+  app.get("/api/exams/:examId/documents/:documentId/chats", (request, response) => {
+    const exam = examMap.get(request.params.examId);
+    if (!exam) return response.status(404).json({ error: "Exam not found" });
+    findSearchableDocument(exam, request.params.documentId);
+    const rows = database.prepare(`
+      SELECT sessions.*,
+        (SELECT COUNT(*) FROM messages WHERE messages.session_id = sessions.id) AS message_count,
+        (SELECT content FROM messages WHERE messages.session_id = sessions.id ORDER BY created_at DESC, rowid DESC LIMIT 1) AS latest_message
+      FROM sessions
+      WHERE exam_id = ? AND scope_type = 'document' AND document_id = ? AND kind = 'document'
+      ORDER BY updated_at DESC, created_at DESC
+    `).all(exam.id, request.params.documentId) as Array<SessionRow & {
+      message_count: number;
+      latest_message: string | null;
+    }>;
+    response.json(rows.map((row) => ({
+      ...sessionFromRow(row),
+      messageCount: row.message_count,
+      ...(row.latest_message ? { latestMessage: row.latest_message } : {}),
+    })));
+  });
+
+  app.post("/api/exams/:examId/documents/:documentId/chats", (request, response) => {
+    const exam = examMap.get(request.params.examId);
+    if (!exam) return response.status(404).json({ error: "Exam not found" });
+    const document = findSearchableDocument(exam, request.params.documentId);
+    const body = z.object({ profileId: z.string().min(1) }).parse(request.body);
+    if (!profileIsActive(exam, body.profileId)) {
+      return response.status(400).json({ error: "Profile not found" });
+    }
+    const session = createSessionRecord({
+      examId: exam.id,
+      documentId: document.id,
+      mode: "study",
+      kind: "document",
+      title: document.title,
+      profileId: body.profileId,
+    });
+    response.status(201).json({ ...session, messages: [], reviews: [] });
+  });
+
   app.post("/api/exam-runs", (request, response) => {
     const body = z.object({
       examId: z.string().min(1),
@@ -489,7 +701,7 @@ export function createApp(options: CreateAppOptions) {
     }).parse(request.body);
     const exam = examMap.get(body.examId);
     if (!exam) return response.status(404).json({ error: "Exam not found" });
-    if (!exam.profiles.some((profile) => profile.id === body.profileId)) {
+    if (!profileIsActive(exam, body.profileId)) {
       return response.status(400).json({ error: "Profile not found" });
     }
 
@@ -617,7 +829,7 @@ export function createApp(options: CreateAppOptions) {
       ? exam.questions.find((candidate) => candidate.id === body.questionId)
       : exam.questions[Math.floor(random() * exam.questions.length)];
     if (!question) return response.status(404).json({ error: "Question not found" });
-    if (!exam.profiles.some((profile) => profile.id === body.profileId)) {
+    if (!profileIsActive(exam, body.profileId)) {
       return response.status(400).json({ error: "Profile not found" });
     }
 
@@ -640,7 +852,7 @@ export function createApp(options: CreateAppOptions) {
         (SELECT content FROM messages WHERE messages.session_id = sessions.id ORDER BY created_at DESC, rowid DESC LIMIT 1) AS latest_message,
         (SELECT payload_json FROM reviews WHERE reviews.session_id = sessions.id ORDER BY created_at DESC, rowid DESC LIMIT 1) AS latest_review
       FROM sessions
-      WHERE exam_id = ? AND question_id = ? AND kind IN ('tutor', 'review')
+      WHERE exam_id = ? AND question_id = ? AND scope_type = 'question' AND kind IN ('tutor', 'review')
       ORDER BY updated_at DESC, created_at DESC
     `).all(exam.id, question.id) as Array<SessionRow & {
       message_count: number;
@@ -663,7 +875,7 @@ export function createApp(options: CreateAppOptions) {
       kind: z.enum(["tutor", "review"]),
       profileId: z.string().min(1),
     }).parse(request.body);
-    if (!exam.profiles.some((profile) => profile.id === body.profileId)) {
+    if (!profileIsActive(exam, body.profileId)) {
       return response.status(400).json({ error: "Profile not found" });
     }
     const session = createSessionRecord({
@@ -676,38 +888,124 @@ export function createApp(options: CreateAppOptions) {
     response.status(201).json({ ...session, messages: [], reviews: [] });
   });
 
+  async function buildChatRequestForSession(session: SessionRow, content: string) {
+    const exam = examMap.get(session.exam_id);
+    const profile = exam ? resolveProfile(exam, session.profile_id) : undefined;
+    if (!exam || !profile) {
+      throw Object.assign(new Error("Chat content is unavailable"), { status: 409 });
+    }
+    if (session.scope_type === "document") {
+      if (!session.document_id) {
+        throw Object.assign(new Error("Document chat content is unavailable"), { status: 409 });
+      }
+      const document = findSearchableDocument(exam, session.document_id);
+      const sources = await documentRetrieval().retrieve(
+        exam,
+        document.id,
+        content,
+        DEFAULT_DOCUMENT_RAG_PROFILE,
+      );
+      return {
+        request: buildDocumentTutorRequest({
+          exam,
+          document,
+          profile,
+          message: content,
+          dialogue: messagesForSession(session.id),
+          sources,
+          ragProfile: DEFAULT_DOCUMENT_RAG_PROFILE,
+        }),
+        sources,
+      };
+    }
+
+    const question = exam.questions.find((item) => item.id === session.question_id);
+    if (!question) {
+      throw Object.assign(new Error("Chat content is unavailable"), { status: 409 });
+    }
+    return {
+      request: buildTutorRequest({
+        exam,
+        question,
+        profile,
+        message: content,
+        dialogue: messagesForSession(session.id),
+      }),
+      sources: undefined,
+    };
+  }
+
   app.get("/api/chats/:id", (request, response) => {
     const session = getSession(request.params.id);
     if (session.kind === "exam") return response.status(409).json({ error: "Exam sessions are not study chats" });
     response.json(chatDetail(session));
   });
 
-  app.post("/api/chats/:id/messages", async (request, response) => {
+  app.post("/api/chats/:id/messages/stream", async (request, response) => {
     const session = getSession(request.params.id);
-    if (session.kind !== "tutor") return response.status(409).json({ error: "This chat does not accept tutor messages" });
+    if (session.kind !== "tutor" && session.kind !== "document") return response.status(409).json({ error: "This chat does not accept tutor messages" });
     if (session.status === "completed") return response.status(409).json({ error: "Chat is completed" });
     const { content } = z.object({ content: z.string().trim().min(1).max(8_000) }).parse(request.body);
-    const exam = examMap.get(session.exam_id);
-    const question = exam?.questions.find((item) => item.id === session.question_id);
-    const profile = exam?.profiles.find((item) => item.id === session.profile_id);
-    if (!exam || !question || !profile) return response.status(409).json({ error: "Chat content is unavailable" });
+    const aiProvider = currentAIProvider();
+    if (!aiProvider) return response.status(503).json({ error: "AI tutor is not configured" });
+
+    response.status(200);
+    response.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
+    response.setHeader("Cache-Control", "no-cache, no-transform");
+    response.setHeader("X-Accel-Buffering", "no");
+
+    const writeEvent = (event: Record<string, unknown>) => {
+      response.write(`${JSON.stringify(event)}\n`);
+    };
+
+    let assistantContent = "";
+    try {
+      const { request: tutorRequest, sources } = await buildChatRequestForSession(session, content);
+      if (aiProvider.capabilities.chatStreaming && aiProvider.chatStream) {
+        for await (const chunk of aiProvider.chatStream(tutorRequest)) {
+          assistantContent += chunk;
+          writeEvent({ type: "chunk", delta: chunk });
+        }
+      } else {
+        assistantContent = await aiProvider.chat(tutorRequest);
+        writeEvent({ type: "chunk", delta: assistantContent });
+      }
+      const result = database.transaction(() => {
+        const user = insertMessage(session.id, "user", content);
+        const assistant = insertMessage(session.id, "assistant", assistantContent, sources);
+        const activity = touchSession(session.id, content);
+        return { user, assistant, ...activity };
+      })();
+      writeEvent({ type: "done", ...result });
+    } catch {
+      writeEvent({ type: "error", error: "AI tutor stream failed" });
+    } finally {
+      response.end();
+    }
+  });
+
+  app.post("/api/chats/:id/messages", async (request, response) => {
+    const session = getSession(request.params.id);
+    if (session.kind !== "tutor" && session.kind !== "document") return response.status(409).json({ error: "This chat does not accept tutor messages" });
+    if (session.status === "completed") return response.status(409).json({ error: "Chat is completed" });
+    const { content } = z.object({ content: z.string().trim().min(1).max(8_000) }).parse(request.body);
     const aiProvider = currentAIProvider();
     if (!aiProvider) return response.status(503).json({ error: "AI tutor is not configured" });
     let assistantContent: string;
+    let sources: RetrievedSourceReference[] | undefined;
     try {
-      assistantContent = await aiProvider.chat(buildTutorRequest({
-        exam,
-        question,
-        profile,
-        message: content,
-        dialogue: messagesForSession(session.id),
-      }));
-    } catch {
-      return response.status(502).json({ error: "AI tutor request failed" });
+      const built = await buildChatRequestForSession(session, content);
+      sources = built.sources;
+      assistantContent = await aiProvider.chat(built.request);
+    } catch (error) {
+      const status = typeof error === "object" && error && "status" in error
+        ? Number((error as { status: unknown }).status)
+        : 502;
+      return response.status(status).json({ error: status === 502 ? "AI tutor request failed" : error instanceof Error ? error.message : "AI tutor request failed" });
     }
     const result = database.transaction(() => {
       const user = insertMessage(session.id, "user", content);
-      const assistant = insertMessage(session.id, "assistant", assistantContent);
+      const assistant = insertMessage(session.id, "assistant", assistantContent, sources);
       const activity = touchSession(session.id, content);
       return { user, assistant, ...activity };
     })();
@@ -722,7 +1020,7 @@ export function createApp(options: CreateAppOptions) {
 
   async function processReview(sessionId: string, answer: string) {
     const session = getSession(sessionId);
-    if (session.kind === "tutor") {
+    if (session.kind === "tutor" || session.kind === "document") {
       throw Object.assign(new Error("Tutor chats cannot be scored"), { status: 409 });
     }
     if (session.status === "completed") {
@@ -730,7 +1028,7 @@ export function createApp(options: CreateAppOptions) {
     }
     const exam = examMap.get(session.exam_id);
     const question = exam?.questions.find((candidate) => candidate.id === session.question_id);
-    const profile = exam?.profiles.find((candidate) => candidate.id === session.profile_id);
+    const profile = exam ? resolveProfile(exam, session.profile_id) : undefined;
     if (!exam || !question || !profile) {
       throw Object.assign(new Error("Session content is unavailable"), { status: 409 });
     }

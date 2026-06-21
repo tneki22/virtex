@@ -4,6 +4,34 @@ import { describe, expect, it, vi } from "vitest";
 import { App } from "../../client/src/App.js";
 import { AppShell } from "../../client/src/components/AppShell.js";
 
+const runtimePromptSettings = {
+  examId: "database-fundamentals",
+  profiles: [{
+    id: "neutral",
+    name: "Neutral",
+    description: "Neutral examiner",
+    tone: "neutral",
+    systemPrompts: {
+      studyTutor: "Tutor prompt",
+      studyReview: "Review prompt",
+      examFinal: "Exam prompt",
+    },
+    quickPrompts: [],
+  }],
+  defaults: [{
+    id: "neutral",
+    name: "Neutral",
+    description: "Neutral examiner",
+    tone: "neutral",
+    systemPrompts: {
+      studyTutor: "Tutor prompt",
+      studyReview: "Review prompt",
+      examFinal: "Exam prompt",
+    },
+    quickPrompts: [],
+  }],
+};
+
 describe("AppShell", () => {
   it("renders application content without a global header", () => {
     render(
@@ -17,18 +45,79 @@ describe("AppShell", () => {
     expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
   });
 
-  it("redirects the removed settings route to the overview", async () => {
+  it("opens the database exam from the root route", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
+      if (url === "/api/materials") {
+        return new Response("[]", { status: 200, headers: { "Content-Type": "application/json" } });
+      }
       if (url === "/api/settings/ai") {
         return new Response(JSON.stringify({
           keys: {
             openrouter: { configured: true, source: "environment" },
             groq: { configured: true, source: "environment" },
           },
-          text: { provider: "openrouter", model: "openai/gpt-5-mini", available: true },
+          text: {
+            provider: "openrouter",
+            model: "openai/gpt-5-mini",
+            available: true,
+            streamingPreference: "auto",
+            streamingAvailable: false,
+          },
           speech: { provider: "groq", model: "whisper-large-v3-turbo", available: true },
         }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url === "/api/exams/database-fundamentals/prompts") {
+        return new Response(JSON.stringify(runtimePromptSettings), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response(JSON.stringify({
+        id: "database-fundamentals",
+        version: "1",
+        title: "Базы данных",
+        description: "Экзамен",
+        subject: "Базы данных",
+        profiles: [{ id: "neutral", name: "Нейтральный", description: "", tone: "neutral" }],
+        documents: [],
+        questions: [{
+          id: "q-1", officialNumber: 1, officialText: "Вопрос", displayText: "Вопрос",
+          groupId: "core", groupTitle: "Основы", emphasis: [], sources: [],
+        }],
+        thresholds: { almostReady: 60, ready: 80 },
+        policy: { timerMinutes: null, maxFollowUps: 2, referenceReveal: "after_attempt_or_explicit" },
+        styleGuide: "Точно",
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+
+    render(<MemoryRouter initialEntries={["/"]}><App /></MemoryRouter>);
+
+    expect(await screen.findByRole("heading", { name: "Выберите режим" })).toBeInTheDocument();
+    vi.unstubAllGlobals();
+  });
+
+  it("redirects the removed settings route to the database exam", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/materials") {
+        return new Response("[]", { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url === "/api/settings/ai") {
+        return new Response(JSON.stringify({
+          keys: {
+            openrouter: { configured: true, source: "environment" },
+            groq: { configured: true, source: "environment" },
+          },
+          text: {
+            provider: "openrouter",
+            model: "openai/gpt-5-mini",
+            available: true,
+            streamingPreference: "auto",
+            streamingAvailable: false,
+          },
+          speech: { provider: "groq", model: "whisper-large-v3-turbo", available: true },
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url === "/api/exams/database-fundamentals/prompts") {
+        return new Response(JSON.stringify(runtimePromptSettings), { status: 200, headers: { "Content-Type": "application/json" } });
       }
       return new Response(JSON.stringify({
         id: "database-fundamentals",

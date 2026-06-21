@@ -6,12 +6,14 @@ import type {
   RuntimeAISettings,
   RuntimeAISettingsUpdate,
   SpeechProviderId,
+  StreamingPreference,
 } from "../../../shared/contracts.js";
 import type { ExamApi } from "../api.js";
 
 interface SettingsForm {
   textProvider: AIProviderId;
   textModel: string;
+  textStreamingPreference: StreamingPreference;
   speechProvider: SpeechProviderId;
   speechModel: string;
   openrouterApiKey: string;
@@ -49,6 +51,7 @@ export function AIProviderSettings({ api }: { api: ExamApi }) {
     const update: RuntimeAISettingsUpdate = {
       textProvider: form.textProvider,
       textModel: form.textModel.trim(),
+      textStreamingPreference: form.textStreamingPreference,
       speechProvider: form.speechProvider,
       speechModel: form.speechProvider === "disabled" ? "" : form.speechModel.trim(),
       ...(form.openrouterApiKey.trim() ? { openrouterApiKey: form.openrouterApiKey.trim() } : {}),
@@ -93,7 +96,7 @@ export function AIProviderSettings({ api }: { api: ExamApi }) {
   if (!settings || !form) {
     return (
       <section className="ai-settings-section" aria-labelledby="ai-settings-heading" aria-busy="true">
-        <p role="status">Загружаем AI-настройки…</p>
+        <p role="status">Загружаем AI-настройки...</p>
         {error && <p role="alert">{error}</p>}
       </section>
     );
@@ -108,6 +111,7 @@ export function AIProviderSettings({ api }: { api: ExamApi }) {
         </div>
         <div className="ai-active-summary" aria-label="Активная конфигурация">
           <span>Текст: {providerNames[settings.text.provider]} · {settings.text.model}</span>
+          <span>Streaming: {settings.text.streamingPreference === "off" ? "off" : settings.text.streamingAvailable ? "on" : "fallback"}</span>
           <span>Речь: {settings.speech.provider === "disabled" ? "выключена" : `${providerNames[settings.speech.provider]} · ${settings.speech.model}`}</span>
         </div>
       </div>
@@ -157,6 +161,16 @@ export function AIProviderSettings({ api }: { api: ExamApi }) {
           <label>Модель текста
             <input value={form.textModel} onChange={(event) => change("textModel", event.target.value)} />
           </label>
+          <label>Streaming чата
+            <select
+              value={form.textStreamingPreference}
+              onChange={(event) => change("textStreamingPreference", event.target.value as StreamingPreference)}
+            >
+              <option value="auto">Auto</option>
+              <option value="on">On</option>
+              <option value="off">Off</option>
+            </select>
+          </label>
           <button type="button" className="secondary-button" onClick={() => void testText()}>
             <RefreshCw size={15} /> Проверить текст
           </button>
@@ -191,7 +205,7 @@ export function AIProviderSettings({ api }: { api: ExamApi }) {
 
       {error && <p className="ai-settings-error" role="alert">{error}</p>}
       <button type="button" className="primary-button ai-settings-save" disabled={saving} onClick={() => void save()}>
-        <CheckCircle2 size={17} /> {saving ? "Сохраняем…" : "Сохранить AI-настройки"}
+        <CheckCircle2 size={17} /> {saving ? "Сохраняем..." : "Сохранить AI-настройки"}
       </button>
       <p className="ai-settings-note">Ключи сохраняются только в локальной SQLite и не возвращаются браузеру. Пустое поле сохраняет текущий ключ.</p>
     </section>
@@ -228,6 +242,7 @@ function formFromSettings(settings: RuntimeAISettings): SettingsForm {
   return {
     textProvider: settings.text.provider,
     textModel: settings.text.model,
+    textStreamingPreference: settings.text.streamingPreference ?? "auto",
     speechProvider: settings.speech.provider,
     speechModel: settings.speech.model,
     openrouterApiKey: "",

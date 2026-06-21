@@ -6,6 +6,7 @@ describe("UI interaction styles", () => {
     const css = readFileSync("client/src/styles.css", "utf8");
     const rule = css.match(/\.exam-exit-button\s*\{([^}]*)\}/)?.[1] ?? "";
 
+    expect(rule).toMatch(/top:\s*8px/);
     expect(rule).toMatch(/left:\s*18px/);
     expect(rule).not.toMatch(/right:\s*18px/);
   });
@@ -27,6 +28,35 @@ describe("UI interaction styles", () => {
     expect(css).toContain("@media (hover: hover) and (pointer: fine)");
     expect(css).toMatch(/\.primary-button:active:not\(:disabled\)/);
     expect(css).toMatch(/\.icon-button:active:not\(:disabled\)/);
+  });
+
+  it("keeps prompt disclosure icons pinned and rotated by state", () => {
+    const css = readFileSync("client/src/styles.css", "utf8");
+
+    expect(css).toMatch(/\.prompt-profile-disclosure\s*>\s*\.animated-disclosure-trigger\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s*auto/s);
+    expect(css).toMatch(/\.animated-disclosure-trigger\s*\.animated-disclosure-icon\s*\{[^}]*transition:\s*transform var\(--ease\)/s);
+    expect(css).toMatch(/\.animated-disclosure\.is-open\s*>\s*\.animated-disclosure-trigger\s*\.animated-disclosure-icon\s*\{[^}]*transform:\s*rotate\(180deg\)/s);
+  });
+
+  it("adds hover feedback to prompt editor rows", () => {
+    const css = readFileSync("client/src/styles.css", "utf8");
+
+    expect(css).toMatch(/@media \(hover: hover\) and \(pointer: fine\)[\s\S]*\.prompt-profile-disclosure\s*>\s*\.animated-disclosure-trigger:hover/s);
+    expect(css).toMatch(/@media \(hover: hover\) and \(pointer: fine\)[\s\S]*\.quick-prompt-editor:hover/s);
+  });
+
+  it("uses larger prompt save status text", () => {
+    const css = readFileSync("client/src/styles.css", "utf8");
+    const rule = css.match(/\.prompt-settings-success\s*\{([^}]*)\}/)?.[1] ?? "";
+
+    expect(rule).toMatch(/font-size:\s*13px/);
+  });
+
+  it("halves the desktop chat panel side padding", () => {
+    const css = readFileSync("client/src/styles.css", "utf8");
+    const rule = css.match(/\.answer-panel\s*\{([^}]*)\}/)?.[1] ?? "";
+
+    expect(rule).toMatch(/padding:\s*52px clamp\(16px,\s*2\.5vw,\s*38px\) 80px/);
   });
 
   it("keeps history hover feedback out of layout properties", () => {

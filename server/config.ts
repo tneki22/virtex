@@ -48,12 +48,14 @@ export function resolveRuntimeConfig(root: string, environment: Environment): Ru
         baseUrl: environment.OPENROUTER_BASE_URL ?? environment.OPENAI_BASE_URL ?? "https://openrouter.ai/api/v1",
         textModel: environment.OPENROUTER_TEXT_MODEL ?? environment.OPENAI_MODEL ?? "openai/gpt-5-mini",
         speechModel: environment.OPENROUTER_SPEECH_MODEL ?? "openai/whisper-large-v3",
+        embeddingModel: environment.OPENROUTER_EMBEDDING_MODEL ?? "openai/text-embedding-3-small",
       },
       groq: {
         apiKey: groqApiKey,
         baseUrl: environment.GROQ_BASE_URL ?? "https://api.groq.com/openai/v1",
         textModel: environment.GROQ_TEXT_MODEL ?? "openai/gpt-oss-20b",
         speechModel: environment.GROQ_WHISPER_MODEL ?? "whisper-large-v3-turbo",
+        embeddingModel: undefined,
       },
     },
   };

@@ -8,6 +8,7 @@ import {
   aiReviewContentSchema,
   examPackageSchema,
   sessionKindSchema,
+  systemPromptSetSchema,
 } from "../../shared/schemas.js";
 import { normalizeStudyMode } from "../../shared/study-mode.js";
 
@@ -52,6 +53,75 @@ describe("sourceRefKey", () => {
 });
 
 describe("examPackageSchema", () => {
+  it("accepts searchable document metadata and document tutor prompts", () => {
+    expect(sessionKindSchema.parse("document")).toBe("document");
+    expect(systemPromptSetSchema.parse({
+      studyTutor: "Study by question.",
+      studyReview: "Review answers.",
+      examFinal: "Final exam verdict.",
+      documentTutor: "Study by document.",
+    })).toMatchObject({ documentTutor: "Study by document." });
+
+    const result = examPackageSchema.safeParse({
+      id: "sample",
+      version: "1.0.0",
+      title: "Sample exam",
+      description: "Fixture",
+      subject: "Databases",
+      profiles: [{
+        id: "mentor",
+        name: "Mentor",
+        description: "Explains",
+        tone: "supportive",
+        systemPrompts: {
+          studyTutor: "Study by question.",
+          studyReview: "Review answers.",
+          examFinal: "Final exam verdict.",
+          documentTutor: "Study by document.",
+        },
+      }],
+      documents: [
+        {
+          id: "questions",
+          title: "Official questions",
+          type: "pdf",
+          path: "questions.pdf",
+          role: "questions",
+          searchable: false,
+        },
+        {
+          id: "book",
+          title: "Textbook",
+          type: "pdf",
+          path: "book.pdf",
+          role: "textbook",
+          searchable: true,
+        },
+      ],
+      questions: [{
+        id: "q-1",
+        officialNumber: 1,
+        officialText: "Question",
+        displayText: "Question",
+        groupId: "core",
+        groupTitle: "Core",
+        referenceAnswer: "Answer",
+        emphasis: [],
+        sources: [{ documentId: "book", page: 1 }],
+      }],
+      thresholds: { almostReady: 60, ready: 80 },
+      policy: { maxFollowUps: 2, timerMinutes: null, referenceReveal: "after_attempt_or_explicit" },
+      styleGuide: "Write clearly.",
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error("package should accept searchable document metadata");
+    expect(result.data.documents.find((document) => document.id === "book")).toMatchObject({
+      role: "textbook",
+      searchable: true,
+    });
+  });
+
   it("accepts profile-specific quick prompts", () => {
     expect(sessionKindSchema.parse("tutor")).toBe("tutor");
     const result = examPackageSchema.safeParse({

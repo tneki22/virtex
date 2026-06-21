@@ -1,5 +1,6 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import { ExamOverview } from "./screens/ExamOverview.js";
+import { DocumentStudy } from "./screens/DocumentStudy.js";
 import { History } from "./screens/History.js";
 import { ExamHistory } from "./screens/ExamHistory.js";
 import { Workspace } from "./screens/Workspace.js";
@@ -13,6 +14,7 @@ export function App() {
     <Routes>
       <Route path="/" element={<Navigate to={`/exams/${defaultExamId}`} replace />} />
       <Route path="/exams/:examId" element={<ExamOverview />} />
+      <Route path="/exams/:examId/document-study" element={<DocumentStudy />} />
       <Route path="/exams/:examId/workspace/:questionId" element={<Workspace />} />
       <Route path="/history" element={<History />} />
       <Route path="/history/exams/:runId" element={<ExamHistory />} />

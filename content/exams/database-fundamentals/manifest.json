@@ -98,19 +98,25 @@
       "id": "official-questions",
       "title": "Официальный список вопросов",
       "type": "pdf",
-      "path": "documents/questions.pdf"
+      "path": "documents/questions.pdf",
+      "role": "questions",
+      "searchable": false
     },
     {
       "id": "detailed-answers",
       "title": "Подробные ответы к экзамену",
       "type": "pdf",
-      "path": "documents/detailed_answers.pdf"
+      "path": "documents/detailed_answers.pdf",
+      "role": "answers",
+      "searchable": true
     },
     {
       "id": "textbook",
       "title": "Учебник по базам данных",
       "type": "pdf",
-      "path": "documents/fomins_book.pdf"
+      "path": "documents/fomins_book.pdf",
+      "role": "textbook",
+      "searchable": true
     }
   ],
   "thresholds": {

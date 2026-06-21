@@ -99,6 +99,8 @@
       "title": "Официальный список вопросов",
       "type": "pdf",
       "path": "documents/questions.pdf",
+      "role": "questions",
+      "searchable": false,
       "pageCount": 1,
       "fragments": [
         {
@@ -118,6 +120,8 @@
       "title": "Подробные ответы к экзамену",
       "type": "pdf",
       "path": "documents/detailed_answers.pdf",
+      "role": "answers",
+      "searchable": true,
       "pageCount": 44,
       "fragments": [
         {
@@ -562,6 +566,8 @@
       "title": "Учебник по базам данных",
       "type": "pdf",
       "path": "documents/fomins_book.pdf",
+      "role": "textbook",
+      "searchable": true,
       "pageCount": 169,
       "fragments": [
         {

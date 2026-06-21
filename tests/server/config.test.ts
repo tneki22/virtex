@@ -16,6 +16,7 @@ describe("resolveRuntimeConfig", () => {
       baseUrl: "https://openrouter.ai/api/v1",
       textModel: "openai/gpt-5-mini",
       speechModel: "openai/whisper-large-v3",
+      embeddingModel: "openai/text-embedding-3-small",
     });
   });
 

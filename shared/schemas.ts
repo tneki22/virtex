@@ -1,7 +1,8 @@
 import { z } from "zod";
 
 export const studyModeSchema = z.enum(["study", "exam"]);
-export const sessionKindSchema = z.enum(["tutor", "review", "exam"]);
+export const sessionKindSchema = z.enum(["tutor", "review", "exam", "document"]);
+export const sessionScopeTypeSchema = z.enum(["question", "document"]);
 export const examQuestionCountSchema = z.union([
   z.literal(1),
   z.literal(2),
@@ -12,8 +13,10 @@ export const examQuestionCountSchema = z.union([
 export const runtimeAISettingsUpdateSchema = z.object({
   textProvider: z.enum(["openrouter", "groq"]),
   textModel: z.string().trim().min(1).max(200),
+  textStreamingPreference: z.enum(["auto", "on", "off"]).default("auto"),
   speechProvider: z.enum(["openrouter", "groq", "disabled"]),
   speechModel: z.string().trim().max(200),
+  embeddingModel: z.string().trim().min(1).max(200).optional(),
   openrouterApiKey: z.string().trim().min(1).max(1_000).optional(),
   groqApiKey: z.string().trim().min(1).max(1_000).optional(),
   clearOpenrouterApiKey: z.boolean().optional(),
@@ -61,21 +64,81 @@ export const sourceDocumentSchema = z.object({
   title: z.string().min(1),
   type: z.enum(["pdf", "markdown", "text"]),
   path: z.string().min(1),
+  role: z.enum(["questions", "answers", "textbook", "lecture", "notes", "other"]).optional(),
+  searchable: z.boolean().optional(),
   pageCount: z.number().int().positive().optional(),
   fragments: z.array(sourceFragmentSchema).optional(),
 });
 
+export const systemPromptSetSchema = z.object({
+  studyTutor: z.string().trim().min(1).max(12_000),
+  studyReview: z.string().trim().min(1).max(12_000),
+  examFinal: z.string().trim().min(1).max(12_000),
+  documentTutor: z
+    .string()
+    .trim()
+    .min(1)
+    .max(12_000)
+    .default("Use the selected document as the authoritative study source."),
+});
+
+export const quickPromptSchema = z.object({
+  id: z.string().trim().min(1).max(80),
+  label: z.string().trim().min(1).max(80),
+  prompt: z.string().trim().min(1).max(2_000),
+});
+
 export const examinerProfileSchema = z.object({
-  id: z.string().min(1),
-  name: z.string().min(1),
-  description: z.string().min(1),
+  id: z.string().trim().min(1).max(80),
+  name: z.string().trim().min(1).max(80),
+  description: z.string().trim().min(1).max(600),
   tone: z.enum(["supportive", "neutral", "strict"]),
   persona: z.enum(["magister", "fomin", "commission"]).optional(),
-  quickPrompts: z.array(z.object({
-    id: z.string().min(1),
-    label: z.string().min(1),
-    prompt: z.string().min(1),
-  })).optional(),
+  systemPrompts: systemPromptSetSchema.optional(),
+  quickPrompts: z.array(quickPromptSchema).optional(),
+  archived: z.boolean().optional(),
+});
+
+export const editableExaminerProfileSchema = examinerProfileSchema.extend({
+  systemPrompts: systemPromptSetSchema,
+  quickPrompts: z.array(quickPromptSchema),
+}).superRefine((profile, context) => {
+  const quickPromptIds = new Set<string>();
+  for (const prompt of profile.quickPrompts) {
+    if (quickPromptIds.has(prompt.id)) {
+      context.addIssue({
+        code: "custom",
+        path: ["quickPrompts"],
+        message: `Duplicate quick prompt ID: ${prompt.id}`,
+      });
+    }
+    quickPromptIds.add(prompt.id);
+  }
+});
+
+export const runtimePromptSettingsUpdateSchema = z.object({
+  profiles: z.array(editableExaminerProfileSchema).min(1),
+}).superRefine((value, context) => {
+  const activeProfiles = value.profiles.filter((profile) => !profile.archived);
+  if (activeProfiles.length === 0) {
+    context.addIssue({
+      code: "custom",
+      path: ["profiles"],
+      message: "At least one active profile is required",
+    });
+  }
+
+  const profileIds = new Set<string>();
+  for (const profile of value.profiles) {
+    if (profileIds.has(profile.id)) {
+      context.addIssue({
+        code: "custom",
+        path: ["profiles"],
+        message: `Duplicate profile ID: ${profile.id}`,
+      });
+    }
+    profileIds.add(profile.id);
+  }
 });
 
 export const examQuestionSchema = z.object({
