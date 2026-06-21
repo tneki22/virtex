@@ -1,9 +1,11 @@
 export type StudyMode = "study" | "exam";
-export type SessionKind = "tutor" | "review" | "exam";
+export type SessionKind = "tutor" | "review" | "exam" | "document";
+export type SessionScopeType = "question" | "document";
 export type AIProviderId = "openrouter" | "groq";
 export type SpeechProviderId = AIProviderId | "disabled";
 export type KeySource = "application" | "environment" | "missing";
 export type StreamingPreference = "auto" | "on" | "off";
+export type DocumentRole = "questions" | "answers" | "textbook" | "lecture" | "notes" | "other";
 
 export interface ExamMaterialFile {
   name: string;
@@ -20,6 +22,7 @@ export interface RuntimeAISettings {
     streamingPreference: StreamingPreference;
     streamingAvailable: boolean;
   };
+  embeddings: { provider: "openrouter"; model: string; available: boolean };
   speech: { provider: SpeechProviderId; model: string; available: boolean };
 }
 
@@ -29,6 +32,7 @@ export interface RuntimeAISettingsUpdate {
   textStreamingPreference?: StreamingPreference;
   speechProvider: SpeechProviderId;
   speechModel: string;
+  embeddingModel?: string;
   openrouterApiKey?: string;
   groqApiKey?: string;
   clearOpenrouterApiKey?: boolean;
@@ -52,6 +56,7 @@ export interface SystemPromptSet {
   studyTutor: string;
   studyReview: string;
   examFinal: string;
+  documentTutor: string;
 }
 
 export type ReadinessStatus =
@@ -70,6 +75,11 @@ export interface SourceReference {
   note?: string;
 }
 
+export interface RetrievedSourceReference extends SourceReference {
+  score: number;
+  text?: string;
+}
+
 export interface SourceFragment {
   id: string;
   page: number;
@@ -81,6 +91,8 @@ export interface SourceDocument {
   title: string;
   type: "pdf" | "markdown" | "text";
   path: string;
+  role?: DocumentRole;
+  searchable?: boolean;
   pageCount?: number;
   fragments?: SourceFragment[];
 }
@@ -159,7 +171,9 @@ export interface ExamPackage {
 export interface StudySession {
   id: string;
   examId: string;
-  questionId: string;
+  scopeType?: SessionScopeType;
+  questionId?: string;
+  documentId?: string;
   mode: StudyMode;
   kind: SessionKind;
   title: string;
@@ -224,6 +238,22 @@ export interface SessionMessage {
   role: "user" | "assistant" | "system";
   content: string;
   createdAt: string;
+  sources?: RetrievedSourceReference[];
+}
+
+export type DocumentIndexState = "missing" | "ready" | "stale" | "unavailable";
+
+export interface DocumentIndexStatus {
+  state: DocumentIndexState;
+  indexedFragments?: number;
+  embeddingModel?: string;
+  updatedAt?: string;
+  message?: string;
+}
+
+export interface DocumentStudyDocument extends Omit<SourceDocument, "fragments"> {
+  searchable: true;
+  indexStatus: DocumentIndexStatus;
 }
 
 export interface QuestionProgress {

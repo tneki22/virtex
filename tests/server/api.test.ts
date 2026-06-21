@@ -5,8 +5,9 @@ import { tmpdir } from "node:os";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExamPackage } from "../../shared/contracts.js";
 import { createApp } from "../../server/app.js";
-import type { AIProvider, ReviewProviderInput } from "../../server/ai.js";
+import type { AIProvider, EmbeddingProvider, ReviewProviderInput } from "../../server/ai.js";
 import { createDatabase } from "../../server/database.js";
+import type { TutorRequest } from "../../server/prompt.js";
 import { RuntimeAIService } from "../../server/runtime-ai.js";
 import { RuntimePromptService } from "../../server/runtime-prompts.js";
 
@@ -75,7 +76,7 @@ class SequenceProvider implements AIProvider {
     return this.responses.shift();
   }
 
-  async chat() {
+  async chat(_input: TutorRequest) {
     return "Tutor response";
   }
 
@@ -91,13 +92,27 @@ class StreamingProvider extends SequenceProvider {
     super([]);
   }
 
-  override async chat() {
+  override async chat(_input: TutorRequest) {
     return this.chunks.join("");
   }
 
-  async *chatStream() {
+  async *chatStream(_input: TutorRequest) {
     for (const chunk of this.chunks) yield chunk;
     if (this.failAfterChunks) throw new Error("stream failed");
+  }
+}
+
+class KeywordEmbeddingProvider implements EmbeddingProvider {
+  readonly model = "test-embedding";
+
+  async embed(input: string[]): Promise<number[][]> {
+    return input.map((text) => {
+      const normalized = text.toLocaleLowerCase("en");
+      return [
+        normalized.includes("transaction") || normalized.includes("atomic") ? 1 : 0,
+        normalized.includes("index") ? 1 : 0,
+      ];
+    });
   }
 }
 
@@ -240,6 +255,89 @@ describe("exam API", () => {
     ]);
   });
 
+  it("uses the saved runtime text model for document study chat turns", async () => {
+    const textCalls: Array<{ provider: string; model: string; request: TutorRequest }> = [];
+    const runtimeAI = new RuntimeAIService({
+      database,
+      environment: {
+        openrouter: {
+          apiKey: "env-openrouter",
+          baseUrl: "https://openrouter.test/api/v1",
+          textModel: "openai/old-text",
+          speechModel: "openai/old-speech",
+          embeddingModel: "openai/old-embedding",
+        },
+        groq: {
+          apiKey: "env-groq",
+          baseUrl: "https://groq.test/openai/v1",
+          textModel: "llama-old",
+          speechModel: "whisper-old",
+        },
+      },
+      factories: {
+        createTextProvider: ({ provider, model }) => ({
+          model,
+          capabilities: { chatStreaming: false },
+          async chat(requestInput) {
+            textCalls.push({ provider, model, request: requestInput });
+            return "Runtime document response";
+          },
+          async review() {
+            return finalReview;
+          },
+          async testConnection() {
+            return { ok: true, model };
+          },
+        }),
+        createEmbeddingProvider: ({ model }) => ({
+          model,
+          async embed(input) {
+            return input.map((text) => {
+              const normalized = text.toLocaleLowerCase("en");
+              return [
+                normalized.includes("transaction") || normalized.includes("atomic") ? 1 : 0,
+                normalized.includes("index") ? 1 : 0,
+              ];
+            });
+          },
+        }),
+        createSpeechProvider: ({ model }) => ({
+          model,
+          async transcribe() {
+            return { text: "unused", model };
+          },
+        }),
+      },
+    });
+    const app = createApp({ database, exams: [exam], runtimeAI });
+
+    const saved = await request(app).put("/api/settings/ai").send({
+      textProvider: "groq",
+      textModel: "llama-doc-new",
+      textStreamingPreference: "auto",
+      speechProvider: "disabled",
+      speechModel: "",
+      embeddingModel: "openai/new-embedding",
+    });
+    expect(saved.status).toBe(200);
+
+    expect((await request(app).post("/api/exams/exam/documents/book/index").send({})).status)
+      .toBe(200);
+    const chat = await request(app)
+      .post("/api/exams/exam/documents/book/chats")
+      .send({ profileId: "neutral" });
+    const turn = await request(app)
+      .post(`/api/chats/${chat.body.id}/messages`)
+      .send({ content: "Explain transactions" });
+
+    expect(turn.status).toBe(201);
+    expect(turn.body.assistant.content).toBe("Runtime document response");
+    expect(textCalls).toHaveLength(1);
+    expect(textCalls[0]).toMatchObject({ provider: "groq", model: "llama-doc-new" });
+    expect(textCalls[0].request.maxCompletionTokens).toBe(6_000);
+    expect(textCalls[0].request.estimatedInputTokens).toBeLessThanOrEqual(14_000);
+  });
+
   it("creates, lists, restores, and continues tutor chats without extra reads from AI", async () => {
     const provider = new SequenceProvider([]);
     const chatSpy = vi.spyOn(provider, "chat");
@@ -288,6 +386,209 @@ describe("exam API", () => {
       "Explain streaming",
       "First chunk",
     ]);
+  });
+
+  it("indexes a searchable document and chats with retrieved source fragments", async () => {
+    const documentExam: ExamPackage = {
+      ...exam,
+      documents: [
+        {
+          id: "questions",
+          title: "Questions",
+          type: "text",
+          path: "questions.txt",
+          pageCount: 1,
+          role: "questions",
+          searchable: false,
+          fragments: [{ id: "questions-p1-f1", page: 1, text: "Official question text" }],
+        },
+        {
+          id: "book",
+          title: "Book",
+          type: "text",
+          path: "book.txt",
+          pageCount: 2,
+          role: "textbook",
+          searchable: true,
+          fragments: [
+            { id: "book-p1-f1", page: 1, text: "A transaction is an atomic unit of work." },
+            { id: "book-p2-f1", page: 2, text: "Indexes speed up lookups." },
+          ],
+        },
+      ],
+    };
+    const provider = new SequenceProvider([]);
+    const chatSpy = vi.spyOn(provider, "chat");
+    const app = createApp({
+      database,
+      exams: [documentExam],
+      aiProvider: provider,
+      embeddingProvider: new KeywordEmbeddingProvider(),
+    });
+
+    const documents = await request(app).get("/api/exams/exam/document-study/documents");
+    expect(documents.status).toBe(200);
+    expect(documents.body).toEqual([
+      expect.objectContaining({ id: "book", searchable: true, indexStatus: { state: "missing" } }),
+    ]);
+
+    const indexed = await request(app).post("/api/exams/exam/documents/book/index").send({});
+    expect(indexed.status).toBe(200);
+    expect(indexed.body).toMatchObject({ state: "ready", indexedFragments: 2 });
+
+    const chat = await request(app)
+      .post("/api/exams/exam/documents/book/chats")
+      .send({ profileId: "neutral" });
+    expect(chat.status).toBe(201);
+    expect(chat.body).toMatchObject({
+      kind: "document",
+      scopeType: "document",
+      documentId: "book",
+    });
+
+    const turn = await request(app)
+      .post(`/api/chats/${chat.body.id}/messages`)
+      .send({ content: "Explain transactions" });
+    expect(turn.status).toBe(201);
+    expect(turn.body.assistant.sources).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        documentId: "book",
+        fragmentId: "book-p1-f1",
+        score: expect.any(Number),
+      }),
+    ]));
+    expect(JSON.stringify(chatSpy.mock.calls[0][0].messages)).toContain("A transaction is an atomic unit of work");
+    expect(JSON.stringify(chatSpy.mock.calls[0][0].messages)).not.toContain("Official question text");
+
+    const restored = await request(app).get(`/api/chats/${chat.body.id}`);
+    expect(restored.body.messages[1].sources).toEqual(turn.body.assistant.sources);
+  });
+
+  it("uses the expanded document RAG profile for document chat turns", async () => {
+    const documentExam: ExamPackage = {
+      ...exam,
+      documents: [{
+        id: "book",
+        title: "Book",
+        type: "text",
+        path: "book.txt",
+        pageCount: 12,
+        role: "textbook",
+        searchable: true,
+        fragments: Array.from({ length: 12 }, (_, index) => ({
+          id: `book-p${index + 1}-f1`,
+          page: index + 1,
+          text: `Transaction topic section ${index + 1}. ${"x".repeat(900)}`,
+        })),
+      }],
+    };
+    const provider = new SequenceProvider([]);
+    const chatSpy = vi.spyOn(provider, "chat");
+    const app = createApp({
+      database,
+      exams: [documentExam],
+      aiProvider: provider,
+      embeddingProvider: new KeywordEmbeddingProvider(),
+    });
+    await request(app).post("/api/exams/exam/documents/book/index").send({});
+    const chat = await request(app)
+      .post("/api/exams/exam/documents/book/chats")
+      .send({ profileId: "neutral" });
+
+    const turn = await request(app)
+      .post(`/api/chats/${chat.body.id}/messages`)
+      .send({ content: "Explain transaction topics in detail" });
+
+    const tutorRequest = chatSpy.mock.calls[0][0] as TutorRequest & { maxCompletionTokens?: number };
+    expect(turn.status).toBe(201);
+    expect(turn.body.assistant.sources.length).toBeGreaterThan(6);
+    expect(tutorRequest.maxCompletionTokens).toBe(6_000);
+    expect(tutorRequest.estimatedInputTokens).toBeLessThanOrEqual(14_000);
+  });
+
+  it("falls back to current exam document ids when compiled metadata has no searchable flags", async () => {
+    const legacyCompiledExam: ExamPackage = {
+      ...exam,
+      documents: [
+        {
+          id: "official-questions",
+          title: "Questions",
+          type: "text",
+          path: "questions.txt",
+          pageCount: 1,
+          fragments: [{ id: "official-questions-p1-f1", page: 1, text: "Official question text" }],
+        },
+        {
+          id: "detailed-answers",
+          title: "Detailed answers",
+          type: "text",
+          path: "answers.txt",
+          pageCount: 1,
+          fragments: [{ id: "detailed-answers-p1-f1", page: 1, text: "Reference material" }],
+        },
+        {
+          id: "textbook",
+          title: "Textbook",
+          type: "text",
+          path: "book.txt",
+          pageCount: 1,
+          fragments: [{ id: "textbook-p1-f1", page: 1, text: "Expanded material" }],
+        },
+      ],
+    };
+    const app = createApp({
+      database,
+      exams: [legacyCompiledExam],
+      aiProvider: new SequenceProvider([]),
+      embeddingProvider: new KeywordEmbeddingProvider(),
+    });
+
+    const documents = await request(app).get("/api/exams/exam/document-study/documents");
+
+    expect(documents.status).toBe(200);
+    expect(documents.body.map((document: { id: string }) => document.id)).toEqual([
+      "detailed-answers",
+      "textbook",
+    ]);
+    expect(documents.body.every((document: { searchable: boolean }) => document.searchable)).toBe(true);
+  });
+
+  it("keeps a failed streamed document turn out of persisted history", async () => {
+    const documentExam: ExamPackage = {
+      ...exam,
+      documents: [{
+        id: "book",
+        title: "Book",
+        type: "text",
+        path: "book.txt",
+        pageCount: 1,
+        role: "textbook",
+        searchable: true,
+        fragments: [{ id: "book-p1-f1", page: 1, text: "A transaction is atomic." }],
+      }],
+    };
+    const provider = new StreamingProvider(["partial"], true);
+    const app = createApp({
+      database,
+      exams: [documentExam],
+      aiProvider: provider,
+      embeddingProvider: new KeywordEmbeddingProvider(),
+    });
+    await request(app).post("/api/exams/exam/documents/book/index").send({});
+    const created = await request(app)
+      .post("/api/exams/exam/documents/book/chats")
+      .send({ profileId: "neutral" });
+
+    const response = await request(app)
+      .post(`/api/chats/${created.body.id}/messages/stream`)
+      .send({ content: "Explain transaction" });
+
+    expect(response.status).toBe(200);
+    expect(await readNdjson(response)).toEqual([
+      { type: "chunk", delta: "partial" },
+      { type: "error", error: "AI tutor stream failed" },
+    ]);
+    expect((await request(app).get(`/api/chats/${created.body.id}`)).body.messages).toEqual([]);
   });
 
   it("keeps a failed streamed tutor turn out of persisted history", async () => {

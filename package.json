@@ -18,6 +18,7 @@
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "typecheck": "tsc -b --pretty false",
+    "rag:check": "tsx scripts/check-document-rag.ts",
     "content:build": "tsx scripts/compile-exam.ts content/exams/database-fundamentals",
     "content:validate": "tsx scripts/compile-exam.ts content/exams/database-fundamentals --check",
     "content:bootstrap": "tsx scripts/bootstrap-database-exam.ts",

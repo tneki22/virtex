@@ -47,6 +47,7 @@ function createApi(): ExamApi {
         studyTutor: `Tutor prompt for ${profile.id}`,
         studyReview: `Review prompt for ${profile.id}`,
         examFinal: `Exam prompt for ${profile.id}`,
+        documentTutor: `Document prompt for ${profile.id}`,
       },
       quickPrompts: profile.quickPrompts ?? [],
     })),
@@ -56,6 +57,7 @@ function createApi(): ExamApi {
         studyTutor: `Tutor prompt for ${profile.id}`,
         studyReview: `Review prompt for ${profile.id}`,
         examFinal: `Exam prompt for ${profile.id}`,
+        documentTutor: `Document prompt for ${profile.id}`,
       },
       quickPrompts: profile.quickPrompts ?? [],
     })),
@@ -98,6 +100,11 @@ function createApi(): ExamApi {
         streamingPreference: "auto",
         streamingAvailable: false,
       },
+      embeddings: {
+        provider: "openrouter",
+        model: "openai/text-embedding-3-small",
+        available: true,
+      },
       speech: { provider: "groq", model: "whisper-large-v3-turbo", available: true },
     }),
     updateAISettings: vi.fn().mockImplementation(async (input) => ({
@@ -111,6 +118,11 @@ function createApi(): ExamApi {
         available: true,
         streamingPreference: input.textStreamingPreference ?? "auto",
         streamingAvailable: input.textStreamingPreference !== "off",
+      },
+      embeddings: {
+        provider: "openrouter",
+        model: input.embeddingModel ?? "openai/text-embedding-3-small",
+        available: true,
       },
       speech: { provider: input.speechProvider, model: input.speechModel, available: true },
     })),
@@ -141,11 +153,15 @@ function renderOverview(api = createApi()) {
 }
 
 describe("ExamOverview", () => {
-  it("shows only study and exam entry points", async () => {
+  it("shows study, document study, and exam entry points", async () => {
     renderOverview();
 
     expect(await screen.findByRole("link", { name: /история/i })).toBeInTheDocument();
-    expect(await screen.findByRole("link", { name: /изучение/i })).toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: /открыть изучение/i })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /изучение 2/i })).toHaveAttribute(
+      "href",
+      `/exams/${exam.id}/document-study`,
+    );
     expect(screen.getByRole("button", { name: /открыть экзамен/i })).toBeInTheDocument();
     expect(screen.queryByText(/практика/i)).not.toBeInTheDocument();
     expect(screen.queryByText(exam.description)).not.toBeInTheDocument();

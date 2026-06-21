@@ -1,16 +1,19 @@
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { compileExamPackage } from "../../scripts/compiler.js";
 
 const packageRoot = path.resolve(
   process.cwd(),
   "content/exams/database-fundamentals",
 );
+let exam: Awaited<ReturnType<typeof compileExamPackage>>;
 
 describe("database fundamentals package", () => {
-  it("provides at least four unique quick prompts for every examiner profile", async () => {
-    const exam = await compileExamPackage(packageRoot);
+  beforeAll(async () => {
+    exam = await compileExamPackage(packageRoot);
+  }, 30_000);
 
+  it("provides at least four unique quick prompts for every examiner profile", () => {
     for (const profile of exam.profiles) {
       expect(profile.quickPrompts).toHaveLength(4);
       expect(new Set(profile.quickPrompts?.map((prompt) => prompt.id))).toHaveLength(4);
@@ -18,9 +21,7 @@ describe("database fundamentals package", () => {
     }
   });
 
-  it("uses the new typed personas and public profile names", async () => {
-    const exam = await compileExamPackage(packageRoot);
-
+  it("uses the new typed personas and public profile names", () => {
     expect(exam.profiles.map((profile) => ({
       id: profile.id,
       name: profile.name,
@@ -32,8 +33,7 @@ describe("database fundamentals package", () => {
     ]);
   });
 
-  it("contains 48 independent, sourced questions with reference answers", async () => {
-    const exam = await compileExamPackage(packageRoot);
+  it("contains 48 independent, sourced questions with reference answers", () => {
     const ids = exam.questions.map((question) => question.id);
     const numbers = exam.questions.map((question) => question.officialNumber);
 
@@ -46,8 +46,7 @@ describe("database fundamentals package", () => {
     expect(exam.questions.every((question) => question.sources.length > 0)).toBe(true);
   });
 
-  it("uses detailed answers as the authoritative source for every question", async () => {
-    const exam = await compileExamPackage(packageRoot);
+  it("uses detailed answers as the authoritative source for every question", () => {
     const byNumber = new Map(
       exam.questions.map((question) => [question.officialNumber, question]),
     );
@@ -85,8 +84,7 @@ describe("database fundamentals package", () => {
     }
   });
 
-  it("marks the audited duplicate, compound, and typo cases", async () => {
-    const exam = await compileExamPackage(packageRoot);
+  it("marks the audited duplicate, compound, and typo cases", () => {
     const byNumber = new Map(
       exam.questions.map((question) => [question.officialNumber, question]),
     );

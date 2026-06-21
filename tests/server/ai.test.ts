@@ -86,6 +86,41 @@ describe("OpenAICompatibleProvider", () => {
     expect(body.max_completion_tokens).toBeLessThanOrEqual(1_200);
   });
 
+  it("uses a request-specific completion budget for expanded document tutor answers", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "completion-1",
+          object: "chat.completion",
+          created: 1,
+          model: "openai/gpt-5-mini",
+          choices: [{
+            index: 0,
+            finish_reason: "stop",
+            message: { role: "assistant", content: "Document tutor answer" },
+          }],
+          usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = new OpenAICompatibleProvider({
+      apiKey: "test-key",
+      baseUrl: "https://openrouter.test/api/v1",
+      model: "openai/gpt-5-mini",
+    });
+
+    await provider.chat({
+      messages: [{ role: "user", content: "Explain with more document context" }],
+      estimatedInputTokens: 6_000,
+      maxCompletionTokens: 6_000,
+    } as never);
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(body.max_completion_tokens).toBe(6_000);
+  });
+
   it("uses strict structured output and bounded completion tokens", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(

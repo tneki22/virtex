@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ExamPackage } from "../../shared/contracts.js";
 import {
+  buildDocumentTutorRequest,
   buildReviewRequest,
   buildTutorRequest,
   MAX_ESTIMATED_INPUT_TOKENS,
@@ -403,5 +404,59 @@ describe("buildTutorRequest", () => {
     expect(commission.messages[0].content).toContain("Комиссия НЕ называет остальные четыре");
     expect(commission.messages[0].content).toContain("максимум два названных термина за весь ответ");
     expect(commission.messages[0].content).not.toMatch(/лень|ленится|лениво/ui);
+  });
+});
+
+describe("buildDocumentTutorRequest", () => {
+  it("uses retrieved fragments without sending the full document", () => {
+    const request = buildDocumentTutorRequest({
+      exam,
+      document: exam.documents[0],
+      profile: { id: "mentor", name: "Mentor", description: "Explains", tone: "supportive" },
+      message: "What does ACID mean?",
+      dialogue: [],
+      sources: [
+        {
+          documentId: "book",
+          page: 1,
+          fragmentId: "book-p1-f1",
+          text: "Relevant ACID fragment",
+          score: 0.9,
+        },
+      ],
+    });
+    const serialized = JSON.stringify(request.messages);
+
+    expect(serialized).toContain("document_tutor");
+    expect(serialized).toContain("document-first");
+    expect(serialized).toContain("Relevant ACID fragment");
+    expect(serialized).not.toContain("UNRELATED FULL TEXTBOOK CONTENT");
+    expect(serialized).toContain("If the retrieved fragments do not answer the question");
+  });
+
+  it("uses the expanded document RAG budget for source text and answer length", () => {
+    const sources = Array.from({ length: 14 }, (_, index) => ({
+      documentId: "book",
+      page: index + 1,
+      fragmentId: `book-p${index + 1}-f1`,
+      text: `expanded-source-${index + 1} ${"x".repeat(980)}`,
+      score: 0.9 - index / 100,
+    }));
+    const request = buildDocumentTutorRequest({
+      exam,
+      document: exam.documents[0],
+      profile: { id: "mentor", name: "Mentor", description: "Explains", tone: "supportive" },
+      message: "Explain the whole topic in detail.",
+      dialogue: [],
+      sources,
+    });
+    const serialized = JSON.stringify(request.messages);
+
+    expect(serialized).toContain("expanded-source-14");
+    expect(serialized).toContain("synthesize across multiple retrieved fragments");
+    expect(serialized).toContain("Do not artificially compress");
+    expect(serialized).not.toContain("UNRELATED FULL TEXTBOOK CONTENT");
+    expect(request.estimatedInputTokens).toBeLessThanOrEqual(14_000);
+    expect((request as { maxCompletionTokens?: number }).maxCompletionTokens).toBe(6_000);
   });
 });

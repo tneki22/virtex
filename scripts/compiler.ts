@@ -20,6 +20,8 @@ const manifestSchema = examPackageSchema.omit({
       title: z.string().min(1),
       type: z.enum(["pdf", "markdown", "text"]),
       path: z.string().min(1),
+      role: z.enum(["questions", "answers", "textbook", "lecture", "notes", "other"]).optional(),
+      searchable: z.boolean().optional(),
     }),
   ).min(1),
 });

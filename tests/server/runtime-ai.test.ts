@@ -10,6 +10,7 @@ const environment: RuntimeAIEnvironment = {
     baseUrl: "https://openrouter.test/api/v1",
     textModel: "openai/env-text",
     speechModel: "openai/env-whisper",
+    embeddingModel: "openai/env-embedding",
   },
   groq: {
     apiKey: "env-groq-secret",
@@ -32,12 +33,16 @@ function createService() {
     model: config.model,
     transcribe: vi.fn(),
   }));
+  const createEmbeddingProvider = vi.fn((config: { model: string }) => ({
+    model: config.model,
+    embed: vi.fn(),
+  }));
   const service = new RuntimeAIService({
     database,
     environment,
-    factories: { createTextProvider, createSpeechProvider },
+    factories: { createTextProvider, createSpeechProvider, createEmbeddingProvider },
   });
-  return { database, service, createTextProvider, createSpeechProvider };
+  return { database, service, createTextProvider, createSpeechProvider, createEmbeddingProvider };
 }
 
 describe("RuntimeAIService", () => {
@@ -55,6 +60,11 @@ describe("RuntimeAIService", () => {
         available: true,
         streamingPreference: "auto",
         streamingAvailable: false,
+      },
+      embeddings: {
+        provider: "openrouter",
+        model: "openai/env-embedding",
+        available: true,
       },
       speech: { provider: "groq", model: "whisper-env", available: true },
     });

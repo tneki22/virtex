@@ -114,6 +114,7 @@ describe("RuntimePromptService", () => {
             studyTutor: "Tutor custom",
             studyReview: "Review custom",
             examFinal: "Exam custom",
+            documentTutor: "Document custom",
           },
         },
       ],

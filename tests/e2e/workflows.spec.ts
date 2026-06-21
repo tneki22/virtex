@@ -21,12 +21,14 @@ async function createStudyChat(
 test("root opens two modes and a tutor dialogue survives reload", async ({ page }) => {
   await page.goto("/");
   await expect(page).toHaveURL(/\/exams\/mock-database$/);
-  await expect(page.getByRole("link", { name: /изучение/i })).toBeVisible();
+  const studyLink = page.getByRole("link", { name: /открыть изучение/i });
+  await expect(studyLink).toBeVisible();
+  await expect(page.getByRole("link", { name: /изучение 2/i })).toBeVisible();
   await expect(page.getByRole("button", { name: /открыть экзамен/i })).toBeVisible();
   await expect(page.getByRole("heading", { name: /материалы к экзамену/i })).toBeVisible();
   await expect(page.getByText(/практика/i)).toHaveCount(0);
 
-  await page.getByRole("link", { name: /изучение/i }).click();
+  await studyLink.click();
   await createStudyChat(page, "tutor");
 
   const editor = page.getByRole("textbox", { name: /сообщение чата/i });
@@ -48,6 +50,23 @@ test("root opens two modes and a tutor dialogue survives reload", async ({ page 
   await page.getByRole("button", { name: /отправить сообщение/i }).click();
   await expect(editor).toHaveValue("");
   await expect(page.getByLabel(/предыдущие реплики/i).getByText("Сформулируй вывод одним предложением.")).toBeVisible();
+});
+
+test("document study prepares an index and renders sources", async ({ page }) => {
+  await page.goto("/exams/mock-database");
+  await page.getByRole("link", { name: /изучение 2/i }).click();
+  await expect(page).toHaveURL(/\/exams\/mock-database\/document-study$/);
+  await expect(page.getByRole("button", { name: /учебный фрагмент/i })).toBeVisible();
+
+  await page.getByRole("button", { name: /подготовить поиск/i }).click();
+  await expect(page.getByRole("button", { name: /новый чат по документу/i })).toBeEnabled();
+  await page.getByRole("button", { name: /новый чат по документу/i }).click();
+
+  await page.getByRole("textbox", { name: /сообщение/i }).fill("Что такое ACID?");
+  await page.getByRole("button", { name: /отправить сообщение/i }).click();
+
+  await expect(page.getByText(/Разберём это/i)).toBeVisible();
+  await expect(page.getByRole("list", { name: /страницы источников/i }).getByText("Стр. 1")).toBeVisible();
 });
 
 test("overview applies independent text and speech model selections", async ({ page }) => {

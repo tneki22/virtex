@@ -99,6 +99,10 @@ function createApi(): ExamApi {
     testAISpeech: vi.fn(),
     getPromptSettings: vi.fn(),
     updatePromptSettings: vi.fn(),
+    listDocumentStudyDocuments: vi.fn(),
+    prepareDocumentIndex: vi.fn(),
+    listDocumentChats: vi.fn(),
+    createDocumentChat: vi.fn(),
   };
 }
 

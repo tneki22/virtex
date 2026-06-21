@@ -7,7 +7,12 @@ import type {
   StreamingPreference,
 } from "../shared/contracts.js";
 import { runtimeAISettingsUpdateSchema } from "../shared/schemas.js";
-import { OpenAICompatibleProvider, type AIProvider } from "./ai.js";
+import {
+  OpenAICompatibleEmbeddingProvider,
+  OpenAICompatibleProvider,
+  type AIProvider,
+  type EmbeddingProvider,
+} from "./ai.js";
 import {
   GroqTranscriptionProvider,
   OpenRouterTranscriptionProvider,
@@ -19,6 +24,7 @@ export interface ProviderEnvironment {
   baseUrl: string;
   textModel: string;
   speechModel: string;
+  embeddingModel?: string;
 }
 
 export interface RuntimeAIEnvironment {
@@ -36,12 +42,14 @@ interface ProviderConfig {
 interface RuntimeAIFactories {
   createTextProvider(config: ProviderConfig): AIProvider;
   createSpeechProvider(config: ProviderConfig): SpeechTranscriptionProvider;
+  createEmbeddingProvider(config: ProviderConfig): EmbeddingProvider;
 }
 
 interface RuntimeAISnapshot {
   state: RuntimeAISettings;
   textProvider: AIProvider | null;
   speechProvider: SpeechTranscriptionProvider | null;
+  embeddingProvider: EmbeddingProvider | null;
 }
 
 const SETTING = {
@@ -51,6 +59,7 @@ const SETTING = {
   textModel: "ai.text.model",
   speechProvider: "ai.speech.provider",
   speechModel: "ai.speech.model",
+  embeddingModel: "ai.embeddings.model",
   textStreaming: "ai.text.streaming",
 } as const;
 
@@ -59,6 +68,7 @@ const defaultFactories: RuntimeAIFactories = {
   createSpeechProvider: (config) => config.provider === "groq"
     ? new GroqTranscriptionProvider(config)
     : new OpenRouterTranscriptionProvider(config),
+  createEmbeddingProvider: (config) => new OpenAICompatibleEmbeddingProvider(config),
 };
 
 export class RuntimeAIService {
@@ -68,9 +78,9 @@ export class RuntimeAIService {
   constructor(private readonly options: {
     database: Database.Database;
     environment: RuntimeAIEnvironment;
-    factories?: RuntimeAIFactories;
+    factories?: Partial<RuntimeAIFactories>;
   }) {
-    this.factories = options.factories ?? defaultFactories;
+    this.factories = { ...defaultFactories, ...options.factories };
     this.snapshot = this.buildSnapshot();
   }
 
@@ -84,6 +94,10 @@ export class RuntimeAIService {
 
   getSpeechProvider(): SpeechTranscriptionProvider | null {
     return this.snapshot.speechProvider;
+  }
+
+  getEmbeddingProvider(): EmbeddingProvider | null {
+    return this.snapshot.embeddingProvider;
   }
 
   update(input: RuntimeAISettingsUpdate): RuntimeAISettings {
@@ -113,6 +127,7 @@ export class RuntimeAIService {
       this.writeSetting(SETTING.textStreaming, update.textStreamingPreference);
       this.writeSetting(SETTING.speechProvider, update.speechProvider);
       this.writeSetting(SETTING.speechModel, update.speechModel);
+      if (update.embeddingModel) this.writeSetting(SETTING.embeddingModel, update.embeddingModel);
       this.updateKey(SETTING.openrouterApiKey, update.openrouterApiKey, update.clearOpenrouterApiKey);
       this.updateKey(SETTING.groqApiKey, update.groqApiKey, update.clearGroqApiKey);
     });
@@ -160,8 +175,12 @@ export class RuntimeAIService {
     const speechModel = speechProvider === "disabled"
       ? ""
       : stored.get(SETTING.speechModel) ?? this.options.environment[speechProvider].speechModel;
+    const embeddingModel = stored.get(SETTING.embeddingModel)
+      ?? this.options.environment.openrouter.embeddingModel
+      ?? "openai/text-embedding-3-small";
     const textKey = keys[textProvider].value;
     const speechKey = speechProvider === "disabled" ? undefined : keys[speechProvider].value;
+    const embeddingKey = keys.openrouter.value;
     const activeTextProvider = textKey
       ? this.factories.createTextProvider({
           provider: textProvider,
@@ -178,6 +197,14 @@ export class RuntimeAIService {
           model: speechModel,
         })
       : null;
+    const activeEmbeddingProvider = embeddingKey
+      ? this.factories.createEmbeddingProvider({
+          provider: "openrouter",
+          apiKey: embeddingKey,
+          baseUrl: this.options.environment.openrouter.baseUrl,
+          model: embeddingModel,
+        })
+      : null;
 
     return {
       state: {
@@ -192,6 +219,11 @@ export class RuntimeAIService {
           streamingPreference: textStreamingPreference,
           streamingAvailable: textStreamingPreference !== "off" && Boolean(activeTextProvider?.capabilities.chatStreaming),
         },
+        embeddings: {
+          provider: "openrouter",
+          model: embeddingModel,
+          available: Boolean(activeEmbeddingProvider),
+        },
         speech: {
           provider: speechProvider,
           model: speechModel,
@@ -200,6 +232,7 @@ export class RuntimeAIService {
       },
       textProvider: activeTextProvider,
       speechProvider: activeSpeechProvider,
+      embeddingProvider: activeEmbeddingProvider,
     };
   }
 }

@@ -17,6 +17,11 @@ export interface AIProvider {
   testConnection(): Promise<{ ok: boolean; model: string; message?: string }>;
 }
 
+export interface EmbeddingProvider {
+  readonly model: string;
+  embed(input: string[]): Promise<number[][]>;
+}
+
 export interface OpenAICompatibleConfig {
   provider?: AIProviderId;
   apiKey: string;
@@ -95,6 +100,7 @@ export class OpenAICompatibleProvider implements AIProvider {
     this.provider = config.provider ?? "openrouter";
     this.client = new OpenAI({
       apiKey: config.apiKey,
+      dangerouslyAllowBrowser: true,
       ...(config.baseUrl ? { baseURL: config.baseUrl } : {}),
     });
   }
@@ -145,7 +151,7 @@ export class OpenAICompatibleProvider implements AIProvider {
     const response = await this.client.chat.completions.create({
       model: this.model,
       messages: input.messages,
-      max_completion_tokens: 1_200,
+      max_completion_tokens: input.maxCompletionTokens ?? 1_200,
       ...(this.provider === "openrouter" ? { reasoning_effort: "minimal" as const } : {}),
     });
     const content = response.choices[0]?.message.content?.trim();
@@ -157,7 +163,7 @@ export class OpenAICompatibleProvider implements AIProvider {
     const stream = await this.client.chat.completions.create({
       model: this.model,
       messages: input.messages,
-      max_completion_tokens: 1_200,
+      max_completion_tokens: input.maxCompletionTokens ?? 1_200,
       stream: true,
       ...(this.provider === "openrouter" ? { reasoning_effort: "minimal" as const } : {}),
     });
@@ -196,5 +202,31 @@ export class OpenAICompatibleProvider implements AIProvider {
         message: "Connection failed",
       };
     }
+  }
+}
+
+export class OpenAICompatibleEmbeddingProvider implements EmbeddingProvider {
+  readonly model: string;
+  private readonly client: OpenAI;
+
+  constructor(config: OpenAICompatibleConfig) {
+    this.model = config.model;
+    this.client = new OpenAI({
+      apiKey: config.apiKey,
+      dangerouslyAllowBrowser: true,
+      ...(config.baseUrl ? { baseURL: config.baseUrl } : {}),
+    });
+  }
+
+  async embed(input: string[]): Promise<number[][]> {
+    if (input.length === 0) return [];
+    const response = await this.client.embeddings.create({
+      model: this.model,
+      input,
+    });
+    return response.data
+      .slice()
+      .sort((left, right) => left.index - right.index)
+      .map((item) => item.embedding);
   }
 }

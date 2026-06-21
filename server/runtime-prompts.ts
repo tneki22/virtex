@@ -24,6 +24,7 @@ export function defaultSystemPromptsForProfile(profile: ExaminerProfile): System
     studyTutor: defaultPersonaInstructions(profile, "study_tutor"),
     studyReview: defaultPersonaInstructions(profile, "study_review"),
     examFinal: defaultPersonaInstructions(profile, "exam_final"),
+    documentTutor: defaultPersonaInstructions(profile, "document_tutor"),
   };
 }
 

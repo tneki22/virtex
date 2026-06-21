@@ -39,7 +39,7 @@ export function ExamOverview({ api = defaultApi }: { api?: ExamApi }) {
               <h1 id="mode-heading">Выберите режим</h1>
             </div>
 
-            <div className="mode-grid mode-grid-two">
+            <div className="mode-grid mode-grid-three">
               <Link
                 to={`/exams/${exam.id}/workspace/${exam.questions[0]?.id ?? "random"}?mode=study`}
                 className="mode-card"
@@ -51,9 +51,20 @@ export function ExamOverview({ api = defaultApi }: { api?: ExamApi }) {
                 <span className="mode-action">Открыть изучение <ArrowRight size={16} /></span>
               </Link>
 
+              <Link
+                to={`/exams/${exam.id}/document-study`}
+                className="mode-card"
+              >
+                <FileText size={25} />
+                <span className="mode-number">02</span>
+                <h2>Изучение 2</h2>
+                <p>Выберите учебник или ответы, подготовьте индекс и задавайте вопросы по выбранному документу.</p>
+                <span className="mode-action">Открыть чат по документу <ArrowRight size={16} /></span>
+              </Link>
+
               <article className="mode-card exam-mode-card">
                 <GraduationCap size={25} />
-                <span className="mode-number">02</span>
+                <span className="mode-number">03</span>
                 <h2>Экзамен</h2>
                 <p>Ответьте на случайные вопросы без доступа к эталону до проверки.</p>
                 <fieldset className="question-count-picker">

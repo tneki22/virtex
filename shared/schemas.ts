@@ -1,7 +1,8 @@
 import { z } from "zod";
 
 export const studyModeSchema = z.enum(["study", "exam"]);
-export const sessionKindSchema = z.enum(["tutor", "review", "exam"]);
+export const sessionKindSchema = z.enum(["tutor", "review", "exam", "document"]);
+export const sessionScopeTypeSchema = z.enum(["question", "document"]);
 export const examQuestionCountSchema = z.union([
   z.literal(1),
   z.literal(2),
@@ -15,6 +16,7 @@ export const runtimeAISettingsUpdateSchema = z.object({
   textStreamingPreference: z.enum(["auto", "on", "off"]).default("auto"),
   speechProvider: z.enum(["openrouter", "groq", "disabled"]),
   speechModel: z.string().trim().max(200),
+  embeddingModel: z.string().trim().min(1).max(200).optional(),
   openrouterApiKey: z.string().trim().min(1).max(1_000).optional(),
   groqApiKey: z.string().trim().min(1).max(1_000).optional(),
   clearOpenrouterApiKey: z.boolean().optional(),
@@ -62,6 +64,8 @@ export const sourceDocumentSchema = z.object({
   title: z.string().min(1),
   type: z.enum(["pdf", "markdown", "text"]),
   path: z.string().min(1),
+  role: z.enum(["questions", "answers", "textbook", "lecture", "notes", "other"]).optional(),
+  searchable: z.boolean().optional(),
   pageCount: z.number().int().positive().optional(),
   fragments: z.array(sourceFragmentSchema).optional(),
 });
@@ -70,6 +74,12 @@ export const systemPromptSetSchema = z.object({
   studyTutor: z.string().trim().min(1).max(12_000),
   studyReview: z.string().trim().min(1).max(12_000),
   examFinal: z.string().trim().min(1).max(12_000),
+  documentTutor: z
+    .string()
+    .trim()
+    .min(1)
+    .max(12_000)
+    .default("Use the selected document as the authoritative study source."),
 });
 
 export const quickPromptSchema = z.object({

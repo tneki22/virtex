@@ -1,12 +1,17 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { compileExamPackage } from "../../scripts/compiler.js";
 
+const packageRoot = path.resolve(process.cwd(), "content/exams/database-fundamentals");
+let exam: Awaited<ReturnType<typeof compileExamPackage>>;
+
 describe("prompt calibration dataset", () => {
+  beforeAll(async () => {
+    exam = await compileExamPackage(packageRoot);
+  }, 30_000);
+
   it("covers the six required answer classes with valid questions and score ranges", async () => {
-    const packageRoot = path.resolve(process.cwd(), "content/exams/database-fundamentals");
-    const exam = await compileExamPackage(packageRoot);
     const cases = JSON.parse(
       await readFile(path.join(packageRoot, "calibration.json"), "utf8"),
     ) as Array<{ kind: string; questionId: string; expectedScore: { min: number; max: number } }>;

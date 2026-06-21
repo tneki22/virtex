@@ -169,6 +169,7 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
         setExamSummary(step.summary ?? null);
         setProfileId(step.run.profileId);
         if (step.session) {
+          if (!step.session.questionId) throw new Error("Экзаменационная сессия не привязана к вопросу");
           setSession(step.session);
           setSelectedQuestionId(step.session.questionId);
           if (routeQuestionId !== step.session.questionId) {
@@ -604,6 +605,7 @@ export function Workspace({ api = defaultApi }: { api?: ExamApi }) {
         return;
       }
       if (!step.session) throw new Error("Сервер не вернул следующий вопрос");
+      if (!step.session.questionId) throw new Error("Экзаменационная сессия не привязана к вопросу");
       setSession(step.session);
       setSelectedQuestionId(step.session.questionId);
       setReview(null);

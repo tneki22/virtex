@@ -23,12 +23,21 @@ const promptTabs: Array<{ value: PromptTab; label: string }> = [
   { value: "studyTutor", label: "Разбор темы" },
   { value: "studyReview", label: "Проверка ответа" },
   { value: "examFinal", label: "Экзамен" },
+  { value: "documentTutor", label: "Документ" },
 ];
 
 const promptLabels: Record<PromptTab, string> = {
   studyTutor: "Системный промпт для разбора темы",
   studyReview: "Системный промпт для проверки ответа",
   examFinal: "Системный промпт для экзамена",
+  documentTutor: "Системный промпт для чата по документу",
+};
+
+const fallbackSystemPrompts: SystemPromptSet = {
+  studyTutor: "Разбирай тему как наставник.",
+  studyReview: "Проверь ответ студента.",
+  examFinal: "Проведи итоговую экзаменационную проверку.",
+  documentTutor: "Отвечай по выбранному документу и показывай источники.",
 };
 
 export function PromptSettingsEditor({ api, examId }: { api: ExamApi; examId: string }) {
@@ -45,8 +54,9 @@ export function PromptSettingsEditor({ api, examId }: { api: ExamApi; examId: st
     void api.getPromptSettings(examId)
       .then((value) => {
         if (cancelled) return;
-        setSettings(value);
-        setProfiles(value.profiles);
+        const normalized = normalizePromptSettings(value);
+        setSettings(normalized);
+        setProfiles(normalized.profiles);
       })
       .catch((reason: Error) => {
         if (!cancelled) setError(reason.message);
@@ -173,8 +183,9 @@ export function PromptSettingsEditor({ api, examId }: { api: ExamApi; examId: st
     setError("");
     try {
       const saved = await api.updatePromptSettings(examId, { profiles });
-      setSettings(saved);
-      setProfiles(saved.profiles);
+      const normalized = normalizePromptSettings(saved);
+      setSettings(normalized);
+      setProfiles(normalized.profiles);
       setDirty(false);
       setSavedMessage("Промпты сохранены");
     } catch (reason) {
@@ -399,6 +410,29 @@ export function PromptSettingsEditor({ api, examId }: { api: ExamApi; examId: st
   );
 }
 
+function normalizePromptSettings(settings: RuntimePromptSettings): RuntimePromptSettings {
+  return {
+    ...settings,
+    profiles: settings.profiles.map(normalizeProfile),
+    defaults: settings.defaults.map(normalizeProfile),
+  };
+}
+
+function normalizeProfile(profile: EditableExaminerProfile): EditableExaminerProfile {
+  return {
+    ...profile,
+    quickPrompts: profile.quickPrompts ?? [],
+    systemPrompts: completeSystemPrompts(profile.systemPrompts as Partial<SystemPromptSet> | undefined),
+  };
+}
+
+function completeSystemPrompts(prompts: Partial<SystemPromptSet> | undefined): SystemPromptSet {
+  return {
+    ...fallbackSystemPrompts,
+    ...prompts,
+  };
+}
+
 function ProfileTitle({ profile }: { profile: EditableExaminerProfile }) {
   return (
     <span className="prompt-profile-title">
@@ -409,13 +443,14 @@ function ProfileTitle({ profile }: { profile: EditableExaminerProfile }) {
 }
 
 function profileIsValid(profile: EditableExaminerProfile) {
-  const prompts = profile.systemPrompts;
+  const prompts = completeSystemPrompts(profile.systemPrompts as Partial<SystemPromptSet> | undefined);
   return Boolean(
     profile.name.trim() &&
     profile.description.trim() &&
     prompts.studyTutor.trim() &&
     prompts.studyReview.trim() &&
     prompts.examFinal.trim() &&
+    prompts.documentTutor.trim() &&
     profile.quickPrompts.every((prompt) => prompt.label.trim() && prompt.prompt.trim()),
   );
 }

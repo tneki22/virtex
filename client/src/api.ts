@@ -22,6 +22,8 @@ import type {
   RuntimePromptSettings,
   RuntimePromptSettingsUpdate,
   ExamMaterialFile,
+  DocumentIndexStatus,
+  DocumentStudyDocument,
 } from "../../shared/contracts.js";
 import { calculateExamRunSummary, selectQuestionIds } from "../../shared/exam-run.js";
 
@@ -113,6 +115,14 @@ export interface ExamApi {
     examId: string,
     input: RuntimePromptSettingsUpdate,
   ): Promise<RuntimePromptSettings>;
+  listDocumentStudyDocuments(examId: string): Promise<DocumentStudyDocument[]>;
+  prepareDocumentIndex(examId: string, documentId: string): Promise<DocumentIndexStatus>;
+  listDocumentChats(examId: string, documentId: string): Promise<StudyChatSummary[]>;
+  createDocumentChat(input: {
+    examId: string;
+    documentId: string;
+    profileId: string;
+  }): Promise<StudyChatDetail>;
 }
 
 async function jsonRequest<T>(url: string, init?: RequestInit): Promise<T> {
@@ -364,6 +374,28 @@ export class HttpExamApi implements ExamApi {
       body: JSON.stringify(input),
     });
   }
+
+  listDocumentStudyDocuments(examId: string) {
+    return jsonRequest<DocumentStudyDocument[]>(`/api/exams/${examId}/document-study/documents`);
+  }
+
+  prepareDocumentIndex(examId: string, documentId: string) {
+    return jsonRequest<DocumentIndexStatus>(`/api/exams/${examId}/documents/${documentId}/index`, {
+      method: "POST",
+      body: "{}",
+    });
+  }
+
+  listDocumentChats(examId: string, documentId: string) {
+    return jsonRequest<StudyChatSummary[]>(`/api/exams/${examId}/documents/${documentId}/chats`);
+  }
+
+  createDocumentChat(input: Parameters<ExamApi["createDocumentChat"]>[0]) {
+    return jsonRequest<StudyChatDetail>(
+      `/api/exams/${input.examId}/documents/${input.documentId}/chats`,
+      { method: "POST", body: JSON.stringify({ profileId: input.profileId }) },
+    );
+  }
 }
 
 const mockExam: ExamPackage = {
@@ -392,6 +424,8 @@ const mockExam: ExamPackage = {
       title: "Учебный фрагмент",
       type: "text",
       path: "mock.txt",
+      role: "textbook",
+      searchable: true,
       pageCount: 1,
       fragments: [
         {
@@ -441,6 +475,7 @@ export class MockExamApi implements ExamApi {
   private runSessions = new Map<string, { runId: string; position: number }>();
   private chatMessages = new Map<string, SessionMessage[]>();
   private chatReviews = new Map<string, AIReview[]>();
+  private documentIndexes = new Set<string>();
   private runtimeAISettings: RuntimeAISettings = {
     keys: {
       openrouter: { configured: true, source: "environment" },
@@ -452,6 +487,11 @@ export class MockExamApi implements ExamApi {
       available: true,
       streamingPreference: "auto",
       streamingAvailable: true,
+    },
+    embeddings: {
+      provider: "openrouter",
+      model: "openai/text-embedding-3-small",
+      available: true,
     },
     speech: { provider: "groq", model: "whisper-large-v3-turbo", available: true },
   };
@@ -554,6 +594,34 @@ export class MockExamApi implements ExamApi {
   async getDocument() {
     await this.delay();
     return mockExam.documents[0];
+  }
+
+  async listDocumentStudyDocuments(): Promise<DocumentStudyDocument[]> {
+    await this.delay();
+    return mockExam.documents
+      .filter((document) => document.searchable === true)
+      .map(({ fragments: _fragments, ...document }) => ({
+        ...document,
+        searchable: true,
+        indexStatus: this.documentIndexes.has(document.id)
+          ? {
+              state: "ready" as const,
+              indexedFragments: _fragments?.length ?? 0,
+              embeddingModel: this.runtimeAISettings.embeddings.model,
+            }
+          : { state: "missing" as const },
+      }));
+  }
+
+  async prepareDocumentIndex(_examId: string, documentId: string): Promise<DocumentIndexStatus> {
+    await this.delay();
+    this.documentIndexes.add(documentId);
+    const document = mockExam.documents.find((item) => item.id === documentId);
+    return {
+      state: "ready",
+      indexedFragments: document?.fragments?.length ?? 0,
+      embeddingModel: this.runtimeAISettings.embeddings.model,
+    };
   }
 
   async createSession(input: Parameters<ExamApi["createSession"]>[0]) {
@@ -676,7 +744,7 @@ export class MockExamApi implements ExamApi {
   async listChats(examId: string, questionId: string): Promise<StudyChatSummary[]> {
     await this.delay();
     return [...this.sessions.values()]
-      .filter((session) => session.examId === examId && session.questionId === questionId && session.kind !== "exam")
+      .filter((session) => session.examId === examId && session.questionId === questionId && session.scopeType !== "document" && session.kind !== "exam")
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
       .map((session) => {
         const messages = this.chatMessages.get(session.id) ?? [];
@@ -686,6 +754,26 @@ export class MockExamApi implements ExamApi {
           messageCount: messages.length,
           ...(messages.at(-1) ? { latestMessage: messages.at(-1)!.content } : {}),
           ...(reviews.at(-1) ? { latestReview: reviews.at(-1)! } : {}),
+        };
+      });
+  }
+
+  async listDocumentChats(examId: string, documentId: string): Promise<StudyChatSummary[]> {
+    await this.delay();
+    return [...this.sessions.values()]
+      .filter((session) => (
+        session.examId === examId &&
+        session.scopeType === "document" &&
+        session.documentId === documentId &&
+        session.kind === "document"
+      ))
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+      .map((session) => {
+        const messages = this.chatMessages.get(session.id) ?? [];
+        return {
+          ...session,
+          messageCount: messages.length,
+          ...(messages.at(-1) ? { latestMessage: messages.at(-1)!.content } : {}),
         };
       });
   }
@@ -700,6 +788,31 @@ export class MockExamApi implements ExamApi {
       mode: "study",
       kind: input.kind,
       title: input.kind === "tutor" ? "Разбор темы" : "Проверка ответа",
+      profileId: input.profileId,
+      status: "active",
+      followUpCount: 0,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.sessions.set(session.id, session);
+    this.chatMessages.set(session.id, []);
+    this.chatReviews.set(session.id, []);
+    this.persistStudyChats();
+    return { ...session, messages: [], reviews: [] };
+  }
+
+  async createDocumentChat(input: Parameters<ExamApi["createDocumentChat"]>[0]): Promise<StudyChatDetail> {
+    await this.delay();
+    const now = new Date().toISOString();
+    const document = mockExam.documents.find((item) => item.id === input.documentId);
+    const session: StudySession = {
+      id: crypto.randomUUID(),
+      examId: input.examId,
+      scopeType: "document",
+      documentId: input.documentId,
+      mode: "study",
+      kind: "document",
+      title: document?.title ?? "Document chat",
       profileId: input.profileId,
       status: "active",
       followUpCount: 0,
@@ -731,13 +844,22 @@ export class MockExamApi implements ExamApi {
   ): Promise<TutorTurnResponse> {
     await this.delay();
     const session = this.sessions.get(chatId);
-    if (!session || session.kind !== "tutor") throw new Error("Tutor chat not found");
+    if (!session || (session.kind !== "tutor" && session.kind !== "document")) throw new Error("Tutor chat not found");
     const now = new Date().toISOString();
     const user: SessionMessage = { id: crypto.randomUUID(), sessionId: chatId, role: "user", content, createdAt: now };
     const assistant: SessionMessage = {
       id: crypto.randomUUID(), sessionId: chatId, role: "assistant",
       content: `Разберём это на понятном примере. ${content.includes("пицц") ? "Заказ пиццы проходит как единая операция: либо подтверждаются все шаги, либо заказ отменяется целиком." : "Сначала выделите определение, затем механизм и практическое следствие."}`,
       createdAt: now,
+      ...(session.kind === "document" ? {
+        sources: [{
+          documentId: session.documentId ?? "manual",
+          page: 1,
+          fragmentId: "manual-p1-f1",
+          quote: "Транзакция является логической единицей работы.",
+          score: 0.92,
+        }],
+      } : {}),
     };
     if (options.stream) {
       const midpoint = Math.max(1, Math.floor(assistant.content.length / 2));
@@ -931,6 +1053,11 @@ export class MockExamApi implements ExamApi {
         streamingPreference: input.textStreamingPreference ?? this.runtimeAISettings.text.streamingPreference,
         streamingAvailable: (input.textStreamingPreference ?? this.runtimeAISettings.text.streamingPreference) !== "off",
       },
+      embeddings: {
+        provider: "openrouter",
+        model: input.embeddingModel ?? this.runtimeAISettings.embeddings.model,
+        available: true,
+      },
       speech: {
         provider: input.speechProvider,
         model: input.speechModel,
@@ -976,5 +1103,6 @@ function mockSystemPrompts(name: string) {
     studyTutor: `${name}: разбирай тему как наставник.`,
     studyReview: `${name}: проверяй учебный ответ.`,
     examFinal: `${name}: выноси финальный экзаменационный вердикт.`,
+    documentTutor: `${name}: отвечай по выбранному документу и показывай источники.`,
   };
 }
